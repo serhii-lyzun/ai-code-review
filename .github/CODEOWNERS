@@ -1,0 +1,8 @@
+# Review rules, agent config and CI are owned by a human: changes to them
+# need a code owner's approval once the main ruleset requires code-owner review.
+/.github/               @serhii-lyzun
+/.claude/               @serhii-lyzun
+/CLAUDE.md              @serhii-lyzun
+/REVIEW.md              @serhii-lyzun
+/CODE_CONVENTIONS.md    @serhii-lyzun
+/AI_CODE_REVIEW_PLAN.md @serhii-lyzun

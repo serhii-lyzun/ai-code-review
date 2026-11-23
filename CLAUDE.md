@@ -27,6 +27,13 @@ This is a Vite + React + TypeScript template with tooling added: Prettier, Husky
 - Use `@testing-library/react` (`render`, `screen`, `fireEvent`). Unit tests only: no e2e or coverage thresholds.
 - Test files and `src/test/` are excluded from `tsconfig.app.json` and type-checked by `tsconfig.test.json` (adds `jest` and `@testing-library/jest-dom` types), which `npm run build` covers via `tsc -b`. They are never imported by `main.tsx`, so they are not in the Vite bundle.
 
+## CI and AI code review
+
+- `.github/workflows/ci.yml` runs `npm ci`, `lint`, `format:check`, `build` and `test` on every PR and on pushes to `main`. Node version comes from `.nvmrc`.
+- `.github/workflows/ai-review.yml` runs Claude as a comment-only PR reviewer. It posts inline comments and a summary, and the `ai-review-gate` job fails on blocker/major findings. It runs only when the repository variable `AI_AGENTS_ENABLED` is `true`.
+- Review rules live in `REVIEW.md` (severity scale, what to check and ignore). The reviewer prompt is `.claude/agents/reviewer.md` and its output schema is `.claude/schemas/review-findings.json`. The same subagent reviews local changes (ask Claude Code to "use the reviewer agent").
+- The full roadmap (fixer agent, auto-merge, environments, production bug pipeline) is in `AI_CODE_REVIEW_PLAN.md`.
+
 ## Toolchain specifics
 
 - **React 19, Vite 8, TypeScript ~7.0** (the native Go-based compiler). `@vitejs/plugin-react` uses Oxc, not Babel. The React Compiler is not enabled.
