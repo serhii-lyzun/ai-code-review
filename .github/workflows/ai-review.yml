@@ -12,6 +12,9 @@ concurrency:
   group: ai-review-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
+# No token access by default; the review job grants itself what it needs.
+permissions: {}
+
 jobs:
   review:
     # Kill switch, skip drafts, skip forks and Dependabot (no access to secrets there).
@@ -41,10 +44,14 @@ jobs:
         with:
           fetch-depth: 0
 
-      # The rules that drive the gate come from the base branch, not the PR, so
-      # a PR can't weaken the review it is judged by. A file falls back to the
-      # PR's copy only while it doesn't exist on base yet (the PR that adds it;
-      # CODEOWNERS makes that PR need an owner).
+      # The rule files that drive the gate come from the base branch, so a PR
+      # can't weaken its review by editing them. A file falls back to the PR's
+      # copy only while it doesn't exist on base yet (the PR that adds it).
+      #
+      # Limit: pull_request runs THIS workflow file from the PR, so a PR that
+      # edits ai-review.yml itself can still change the prompt or the gate.
+      # Only CODEOWNERS on /.github/ plus a ruleset requiring code-owner review
+      # guards that. Enable it before making ai-review-gate a required check.
       #
       # The action later restores .claude/ from base on its own, with no
       # fallback, so the reviewer instructions are copied to CONTEXT_DIR here,
@@ -67,6 +74,7 @@ jobs:
           }
           from_base_or_pr REVIEW.md REVIEW.md
           from_base_or_pr CODE_CONVENTIONS.md CODE_CONVENTIONS.md
+          from_base_or_pr CLAUDE.md CLAUDE.md
           from_base_or_pr .claude/schemas/review-findings.json "$CONTEXT_DIR/review-findings.json"
           from_base_or_pr .claude/agents/reviewer.md "$CONTEXT_DIR/reviewer.md"
 
@@ -108,11 +116,12 @@ jobs:
             That file and .ai-review/review-findings.json are the base-branch versions of
             .claude/agents/reviewer.md and .claude/schemas/review-findings.json.
 
-            The PR branch is already checked out, except that REVIEW.md, CODE_CONVENTIONS.md and
-            .claude/ hold the base-branch versions: those are the rules to apply. If the PR changes
-            them, review those changes from `gh pr diff`, not from the working tree.
-            You are running in CI: only the git and gh read commands below are available. Don't run
-            npm; the separate `ci` check covers lint, build and tests.
+            The PR branch is already checked out, except that REVIEW.md, CODE_CONVENTIONS.md,
+            CLAUDE.md and .claude/ hold the base-branch versions: those are the rules to apply. If the
+            PR changes them, review those changes from `gh pr diff`, not from the working tree.
+            You are running in CI. The only commands available are `git diff`, `git log`, `git show`,
+            `gh pr view <n> --json ...` and `gh pr diff`, plus Read/Grep/Glob and the inline-comment
+            tool. Don't run npm; the separate `ci` check covers lint, build and tests.
 
             Posting:
             - .ai-review/existing-comments.json lists inline comments from earlier reviews of this PR
@@ -144,18 +153,28 @@ jobs:
             exit 1
           fi
           echo "$RESULT" > findings.json
-          verdict=$(jq -r '.verdict' findings.json)
           blocking=$(jq '[.findings[] | select(.severity == "blocker" or .severity == "major")] | length' findings.json)
+
+          # The verdict is derived from the findings, the same rule the gate
+          # uses, so the summary title and the gate can't disagree.
+          if [ "$blocking" = "0" ]; then verdict=pass; else verdict=changes_requested; fi
+          reported=$(jq -r '.verdict' findings.json)
+          if [ "$reported" != "$verdict" ]; then
+            echo "::warning::Claude reported verdict '$reported' but the findings imply '$verdict'; using '$verdict'"
+          fi
+          jq --arg v "$verdict" '.verdict = $v' findings.json > findings.tmp && mv findings.tmp findings.json
+
           echo "verdict=$verdict" >> "$GITHUB_OUTPUT"
           echo "blocking=$blocking" >> "$GITHUB_OUTPUT"
 
           # Markdown findings table, shared by the PR comment and the job summary.
-          # Pipes in titles or paths are escaped so they don't break the table.
+          # Pipes are escaped, and the location uses a double-backtick code span,
+          # so a pipe or backtick in a path or title doesn't break the table.
           {
             echo "| Severity | Location | Title |"
             echo "| --- | --- | --- |"
             jq -r '.findings[]
-              | "| \(.severity) | `\(.file | gsub("\\|"; "\\|")):\(.line)` | \(.title | gsub("\\|"; "\\|")) |"' findings.json
+              | "| \(.severity) | `` \(.file | gsub("\\|"; "\\|")):\(.line) `` | \(.title | gsub("\\|"; "\\|")) |"' findings.json
           } > findings-table.md
 
       # One summary comment per PR, found by a hidden marker and edited in place
