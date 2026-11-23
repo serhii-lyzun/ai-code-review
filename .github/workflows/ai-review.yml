@@ -1,7 +1,8 @@
 name: AI Review
 
-# Phase 1: comment-only. Claude reviews the PR, posts inline comments and a summary,
-# and the ai-review-gate job reports pass/fail. Nothing is pushed or merged.
+# Phase 1: comment-only. Claude reviews the PR and posts inline comments; the
+# workflow posts (and updates) one summary comment from Claude's structured
+# result, and the ai-review-gate job reports pass/fail. Nothing is pushed or merged.
 
 on:
   pull_request:
@@ -21,10 +22,17 @@ jobs:
       github.actor != 'dependabot[bot]'
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    # No id-token: github_token is passed explicitly, so the action doesn't need
+    # OIDC to mint a Claude GitHub App token.
     permissions:
       contents: read
       pull-requests: write
-      id-token: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      REPO: ${{ github.repository }}
+      PR: ${{ github.event.pull_request.number }}
+      BASE_REF: ${{ github.base_ref }}
+      CONTEXT_DIR: .ai-review
     outputs:
       verdict: ${{ steps.parse.outputs.verdict }}
       blocking: ${{ steps.parse.outputs.blocking }}
@@ -33,30 +41,40 @@ jobs:
         with:
           fetch-depth: 0
 
-      # The rules that drive the gate come from the base branch, not the PR,
-      # so a PR can't weaken the review it is judged by. The action itself
-      # restores .claude/ and CLAUDE.md from base; this covers the rest.
-      # Fallback to the PR's copy only when a file doesn't exist on base yet
-      # (the PR that introduces it); CODEOWNERS makes that PR need an owner.
+      # The rules that drive the gate come from the base branch, not the PR, so
+      # a PR can't weaken the review it is judged by. A file falls back to the
+      # PR's copy only while it doesn't exist on base yet (the PR that adds it;
+      # CODEOWNERS makes that PR need an owner).
+      #
+      # The action later restores .claude/ from base on its own, with no
+      # fallback, so the reviewer instructions are copied to CONTEXT_DIR here,
+      # where that restore doesn't touch them.
       - name: Use review rules from base branch
-        env:
-          BASE_REF: ${{ github.base_ref }}
         run: |
           set -euo pipefail
-          for f in REVIEW.md CODE_CONVENTIONS.md .claude/schemas/review-findings.json; do
-            if git cat-file -e "origin/$BASE_REF:$f" 2>/dev/null; then
-              git checkout "origin/$BASE_REF" -- "$f"
-              echo "Using $f from $BASE_REF"
+          mkdir -p "$CONTEXT_DIR"
+          from_base_or_pr() {  # <path in repo> <destination>
+            if git cat-file -e "origin/$BASE_REF:$1" 2>/dev/null; then
+              git show "origin/$BASE_REF:$1" > "$2"
+              echo "Using $1 from $BASE_REF"
+            elif [ -f "$1" ]; then
+              [ "$1" = "$2" ] || cp "$1" "$2"
+              echo "::warning file=$1::$1 doesn't exist on $BASE_REF yet; using the PR's version"
             else
-              echo "::warning file=$f::$f doesn't exist on $BASE_REF yet; using the PR's version"
+              echo "::error file=$1::$1 is missing on both $BASE_REF and the PR"
+              exit 1
             fi
-          done
+          }
+          from_base_or_pr REVIEW.md REVIEW.md
+          from_base_or_pr CODE_CONVENTIONS.md CODE_CONVENTIONS.md
+          from_base_or_pr .claude/schemas/review-findings.json "$CONTEXT_DIR/review-findings.json"
+          from_base_or_pr .claude/agents/reviewer.md "$CONTEXT_DIR/reviewer.md"
 
       - name: Load findings schema
         id: schema
         run: |
           set -euo pipefail
-          json=$(jq -c . .claude/schemas/review-findings.json)
+          json=$(jq -c . "$CONTEXT_DIR/review-findings.json")
           # claude_args wraps the schema in single quotes, so it must not contain one.
           if [[ "$json" == *"'"* ]]; then
             echo "::error file=.claude/schemas/review-findings.json::Schema must not contain single quotes (it is passed single-quoted in claude_args)"
@@ -64,18 +82,32 @@ jobs:
           fi
           echo "json=$json" >> "$GITHUB_OUTPUT"
 
+      # Earlier inline comments from this workflow, so Claude doesn't post the
+      # same finding again on every push. line == null means GitHub marked the
+      # comment outdated (the code it pointed at changed).
+      - name: Collect existing inline comments
+        run: |
+          set -euo pipefail
+          gh api --paginate "repos/$REPO/pulls/$PR/comments" \
+            --jq '.[] | select(.user.login == "github-actions[bot]")
+                  | {path, line, outdated: (.line == null), title: (.body | split("\n")[0])}' \
+            | jq -s . > "$CONTEXT_DIR/existing-comments.json"
+          echo "Existing inline comments: $(jq length "$CONTEXT_DIR/existing-comments.json")"
+
       - name: Claude review
         id: claude
         uses: anthropics/claude-code-action@v1
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
-          use_sticky_comment: true
           prompt: |
             REPO: ${{ github.repository }}
             PR NUMBER: ${{ github.event.pull_request.number }}
 
-            Read .claude/agents/reviewer.md and follow its instructions exactly. You are that reviewer.
+            Read .ai-review/reviewer.md and follow its instructions exactly. You are that reviewer.
+            That file and .ai-review/review-findings.json are the base-branch versions of
+            .claude/agents/reviewer.md and .claude/schemas/review-findings.json.
+
             The PR branch is already checked out, except that REVIEW.md, CODE_CONVENTIONS.md and
             .claude/ hold the base-branch versions: those are the rules to apply. If the PR changes
             them, review those changes from `gh pr diff`, not from the working tree.
@@ -83,18 +115,22 @@ jobs:
             npm; the separate `ci` check covers lint, build and tests.
 
             Posting:
+            - .ai-review/existing-comments.json lists inline comments from earlier reviews of this PR
+              (path, line, outdated, title = first line of the comment).
             - For each finding, post one inline comment with mcp__github_inline_comment__create_inline_comment
-              (confirmed: true). Start the body with the severity in brackets, e.g. "[major] <title>",
+              (confirmed: true), UNLESS a non-outdated existing comment on the same path is about the
+              same problem. Then skip posting, but still include the finding in the structured result.
+            - Start each inline comment body with the severity in brackets, e.g. "[major] <title>",
               then the message and the suggestion.
-            - Post one top-level summary with `gh pr comment`: verdict, summary, and a table of findings
-              (severity, file:line, title).
-            - Don't send review text as chat messages; only the comments above and the structured result.
+            - Don't post a summary comment and don't send review text as chat messages. The workflow
+              posts the summary from your structured result.
 
-            Finally return the structured result (verdict, summary, findings).
+            Finally return the structured result (verdict, summary, findings), covering ALL current
+            findings, including ones you didn't post again.
           claude_args: >-
             --model claude-opus-5-5
             --max-turns 30
-            --allowedTools "Read,Grep,Glob,Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr comment:*),Bash(git diff:*),Bash(git log:*),Bash(git show:*),mcp__github_inline_comment__create_inline_comment"
+            --allowedTools "Read,Grep,Glob,Bash(gh pr view:*),Bash(gh pr diff:*),Bash(git diff:*),Bash(git log:*),Bash(git show:*),mcp__github_inline_comment__create_inline_comment"
             --json-schema '${{ steps.schema.outputs.json }}'
 
       - name: Parse result
@@ -113,6 +149,50 @@ jobs:
           echo "verdict=$verdict" >> "$GITHUB_OUTPUT"
           echo "blocking=$blocking" >> "$GITHUB_OUTPUT"
 
+          # Markdown findings table, shared by the PR comment and the job summary.
+          # Pipes in titles or paths are escaped so they don't break the table.
+          {
+            echo "| Severity | Location | Title |"
+            echo "| --- | --- | --- |"
+            jq -r '.findings[]
+              | "| \(.severity) | `\(.file | gsub("\\|"; "\\|")):\(.line)` | \(.title | gsub("\\|"; "\\|")) |"' findings.json
+          } > findings-table.md
+
+      # One summary comment per PR, found by a hidden marker and edited in place
+      # on every push, so summaries don't pile up.
+      - name: Post or update summary comment
+        if: steps.parse.outcome == 'success'
+        env:
+          VERDICT: ${{ steps.parse.outputs.verdict }}
+          SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          marker='<!-- ai-review-summary -->'
+          if [ "$VERDICT" = "pass" ]; then title="pass"; else title="changes requested"; fi
+          {
+            echo "$marker"
+            echo "## AI review: $title"
+            echo
+            jq -r .summary findings.json
+            echo
+            if [ "$(jq '.findings | length' findings.json)" -gt 0 ]; then
+              cat findings-table.md
+            else
+              echo "No findings."
+            fi
+            echo
+            echo "<sub>Reviewed commit ${SHA:0:7} · updated on every push</sub>"
+          } > summary-comment.md
+
+          id=$(gh api --paginate "repos/$REPO/issues/$PR/comments" \
+            --jq ".[] | select(.user.login == \"github-actions[bot]\" and (.body | startswith(\"$marker\"))) | .id" | head -n 1)
+          if [ -n "$id" ]; then
+            gh api -X PATCH "repos/$REPO/issues/comments/$id" -F body=@summary-comment.md > /dev/null
+            echo "Updated summary comment $id"
+          else
+            gh pr comment "$PR" --body-file summary-comment.md
+          fi
+
       - name: Job summary (findings + cost)
         if: always()
         env:
@@ -123,9 +203,7 @@ jobs:
             if [ -f findings.json ]; then
               echo "**Verdict:** $(jq -r .verdict findings.json)"
               echo
-              echo "| Severity | Location | Title |"
-              echo "| --- | --- | --- |"
-              jq -r '.findings[] | "| \(.severity) | `\(.file):\(.line)` | \(.title) |"' findings.json
+              cat findings-table.md
             fi
             if [ -n "$EXEC_FILE" ] && [ -f "$EXEC_FILE" ]; then
               echo
