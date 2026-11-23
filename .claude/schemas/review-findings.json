@@ -1,5 +1,4 @@
 {
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "ReviewFindings",
   "description": "Structured result of an AI code review. Drives the ai-review-gate check.",
   "type": "object",
