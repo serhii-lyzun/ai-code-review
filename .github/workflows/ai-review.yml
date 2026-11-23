@@ -1,0 +1,130 @@
+name: AI Review
+
+# Phase 1: comment-only. Claude reviews the PR, posts inline comments and a summary,
+# and the ai-review-gate job reports pass/fail. Nothing is pushed or merged.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+concurrency:
+  group: ai-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    # Kill switch, skip drafts, skip forks and Dependabot (no access to secrets there).
+    if: >-
+      vars.AI_AGENTS_ENABLED == 'true' &&
+      !github.event.pull_request.draft &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.actor != 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      pull-requests: write
+      id-token: write
+    outputs:
+      verdict: ${{ steps.parse.outputs.verdict }}
+      blocking: ${{ steps.parse.outputs.blocking }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Load findings schema
+        id: schema
+        run: echo "json=$(jq -c . .claude/schemas/review-findings.json)" >> "$GITHUB_OUTPUT"
+
+      - name: Claude review
+        id: claude
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          use_sticky_comment: true
+          prompt: |
+            REPO: ${{ github.repository }}
+            PR NUMBER: ${{ github.event.pull_request.number }}
+
+            Read .claude/agents/reviewer.md and follow its instructions exactly. You are that reviewer.
+            The PR branch is already checked out.
+
+            Posting:
+            - For each finding, post one inline comment with mcp__github_inline_comment__create_inline_comment
+              (confirmed: true). Start the body with the severity in brackets, e.g. "[major] <title>",
+              then the message and the suggestion.
+            - Post one top-level summary with `gh pr comment`: verdict, summary, and a table of findings
+              (severity, file:line, title).
+            - Don't send review text as chat messages; only the comments above and the structured result.
+
+            Finally return the structured result (verdict, summary, findings).
+          claude_args: >-
+            --model claude-opus-5-5
+            --max-turns 30
+            --allowedTools "Read,Grep,Glob,Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr comment:*),Bash(git diff:*),Bash(git log:*),Bash(git show:*),mcp__github_inline_comment__create_inline_comment"
+            --json-schema '${{ steps.schema.outputs.json }}'
+
+      - name: Parse result
+        id: parse
+        env:
+          RESULT: ${{ steps.claude.outputs.structured_output }}
+        run: |
+          set -euo pipefail
+          if [ -z "$RESULT" ]; then
+            echo "::error::Claude returned no structured result"
+            exit 1
+          fi
+          echo "$RESULT" > findings.json
+          verdict=$(jq -r '.verdict' findings.json)
+          blocking=$(jq '[.findings[] | select(.severity == "blocker" or .severity == "major")] | length' findings.json)
+          echo "verdict=$verdict" >> "$GITHUB_OUTPUT"
+          echo "blocking=$blocking" >> "$GITHUB_OUTPUT"
+
+      - name: Job summary (findings + cost)
+        if: always()
+        env:
+          EXEC_FILE: ${{ steps.claude.outputs.execution_file }}
+        run: |
+          {
+            echo "## AI review"
+            if [ -f findings.json ]; then
+              echo "**Verdict:** $(jq -r .verdict findings.json)"
+              echo
+              echo "| Severity | Location | Title |"
+              echo "| --- | --- | --- |"
+              jq -r '.findings[] | "| \(.severity) | `\(.file):\(.line)` | \(.title) |"' findings.json
+            fi
+            if [ -n "$EXEC_FILE" ] && [ -f "$EXEC_FILE" ]; then
+              echo
+              jq -r '[.[] | select(.type == "result")] | last
+                | "**Cost:** $\(.total_cost_usd // "n/a") · **Turns:** \(.num_turns // "n/a") · **Duration:** \((.duration_ms // 0) / 1000)s"' \
+                "$EXEC_FILE" || true
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ai-review-findings
+          path: findings.json
+          if-no-files-found: ignore
+
+  ai-review-gate:
+    # always(): a failed or cancelled review must fail the gate, not skip it
+    # (GitHub treats a skipped required check as passing). An intentionally
+    # skipped review (kill switch, draft, fork, Dependabot) passes.
+    needs: review
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fail on blocker/major findings
+        env:
+          RESULT: ${{ needs.review.result }}
+          VERDICT: ${{ needs.review.outputs.verdict }}
+          BLOCKING: ${{ needs.review.outputs.blocking }}
+        run: |
+          echo "Review job: $RESULT · verdict: $VERDICT · blocking findings: $BLOCKING"
+          if [ "$RESULT" = "skipped" ]; then exit 0; fi
+          test "$RESULT" = "success" && test "$BLOCKING" = "0"

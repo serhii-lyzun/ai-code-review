@@ -1,0 +1,79 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ReviewFindings",
+  "description": "Structured result of an AI code review. Drives the ai-review-gate check.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["verdict", "summary", "findings"],
+  "properties": {
+    "verdict": {
+      "type": "string",
+      "enum": ["pass", "changes_requested"],
+      "description": "changes_requested if any finding is blocker or major, otherwise pass."
+    },
+    "summary": {
+      "type": "string",
+      "description": "2-5 sentences: what the change does, main risks, grouped nits."
+    },
+    "findings": {
+      "type": "array",
+      "description": "At most 10 findings, most severe first. Only findings with confidence >= 0.7.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "file",
+          "line",
+          "severity",
+          "category",
+          "confidence",
+          "title",
+          "message",
+          "suggestion"
+        ],
+        "properties": {
+          "file": {
+            "type": "string",
+            "description": "Path relative to the repo root."
+          },
+          "line": {
+            "type": "integer",
+            "description": "Line number in the new version of the file."
+          },
+          "severity": {
+            "type": "string",
+            "enum": ["blocker", "major", "minor", "nit"]
+          },
+          "category": {
+            "type": "string",
+            "enum": [
+              "correctness",
+              "react-rules",
+              "security",
+              "tests",
+              "types",
+              "accessibility",
+              "maintainability"
+            ]
+          },
+          "confidence": {
+            "type": "number",
+            "description": "0 to 1."
+          },
+          "title": {
+            "type": "string",
+            "description": "One-line statement of the problem."
+          },
+          "message": {
+            "type": "string",
+            "description": "The failure scenario: what input or state produces what wrong result."
+          },
+          "suggestion": {
+            "type": "string",
+            "description": "Concrete fix, or an empty string."
+          }
+        }
+      }
+    }
+  }
+}
