@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project state
 
-This is a fresh, unmodified Vite + React + TypeScript template (single `init` commit). `src/App.tsx` is still the template's demo page. There is no application code, router, state management or backend yet (only a Jest unit-test setup, see below). Don't assume any exists.
+This is a Vite + React + TypeScript template with tooling added: Prettier, Husky + lint-staged pre-commit hook, Jest unit tests, and team conventions in `CODE_CONVENTIONS.md` (based on the Rules of React). `src/App.tsx` is still the template's demo page. There is no application code, router, state management or backend yet. Don't assume any exists.
 
 ## Commands
 
@@ -31,7 +31,7 @@ This is a fresh, unmodified Vite + React + TypeScript template (single `init` co
 
 - **React 19, Vite 8, TypeScript ~7.0** (the native Go-based compiler). `@vitejs/plugin-react` uses Oxc, not Babel. The React Compiler is not enabled.
 - **Linting is Oxlint, not ESLint.** Plugins enabled: `react`, `typescript`, `oxc`. `react/rules-of-hooks` is an error, and `react/only-export-components` warns, so component files should only export components (constant exports are allowed). Type-aware linting is off. Turning it on requires `oxlint-tsgolint` and `"options": { "typeAware": true }`.
-- **TS project references:** `tsconfig.json` references `tsconfig.app.json` (covers `src/`, DOM libs, `vite/client` types, test files excluded), `tsconfig.node.json` (covers only `vite.config.ts`, Node types) and `tsconfig.test.json` (extends the app config, covers test files and `src/test/`, Jest types). A new config file at the root needs adding to `tsconfig.node.json`'s `include`.
+- **TS project references:** `tsconfig.json` references `tsconfig.app.json` (covers `src/`, DOM libs, `vite/client` types, test files excluded), `tsconfig.node.json` (covers only `vite.config.ts`, Node types) and `tsconfig.test.json` (extends the app config, covers test files and `src/test/`, Jest types). A new TypeScript config file at the root (`*.config.ts`) needs adding to `tsconfig.node.json`'s `include`. Plain-JS configs such as `jest.config.js` are not type-checked.
 - **Strict compiler flags affect how code is written:**
   - `verbatimModuleSyntax`: type-only imports must use `import type`.
   - `erasableSyntaxOnly`: no `enum`, `namespace` or constructor parameter properties. Use union types or `as const` objects.

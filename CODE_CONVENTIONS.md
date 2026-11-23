@@ -287,16 +287,16 @@ function Counter({ enabled }: { enabled: boolean }) {
 
 Call hooks only from function components or custom hooks, never from plain functions, utilities, or module scope.
 
-```ts
+```tsx
 // ❌ Bad
 function setOnlineStatus() {
-  const isOnline = useOnlineStatus();
+  const isOnline = useOnlineStatus()
 }
 
 // ✅ Good
 function StatusBar() {
-  const isOnline = useOnlineStatus();
-  return <h1>{isOnline ? 'Online' : 'Offline'}</h1>;
+  const isOnline = useOnlineStatus()
+  return <h1>{isOnline ? 'Online' : 'Offline'}</h1>
 }
 ```
 

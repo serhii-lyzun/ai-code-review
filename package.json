@@ -10,7 +10,7 @@
     "preview": "vite preview",
     "test": "jest",
     "test:watch": "jest --watch",
-    "prepare": "husky",
+    "prepare": "husky || true",
     "format": "prettier --write .",
     "format:check": "prettier --check ."
   },
