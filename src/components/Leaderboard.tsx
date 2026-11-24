@@ -13,7 +13,7 @@ type LeaderboardProps = Readonly<{
 function Leaderboard({ players, limit }: LeaderboardProps) {
   // toSorted returns a new array, so the caller's `players` keeps its order.
   const ranked = players.toSorted((a, b) => b.score - a.score)
-  const shown = limit === undefined ? ranked : ranked.slice(0, limit + 1)
+  const shown = limit === undefined ? ranked : ranked.slice(0, limit)
 
   return (
     <ol className="leaderboard">

@@ -20,6 +20,21 @@ describe('Leaderboard', () => {
     expect(players.map((player) => player.name)).toEqual(['Ann', 'Bob', 'Cid'])
   })
 
+  it('shows only the top `limit` players', () => {
+    render(<Leaderboard players={players} limit={2} />)
+    expect(rows()).toEqual(['Bob: 30', 'Cid: 20'])
+  })
+
+  it('shows no players when `limit` is 0', () => {
+    render(<Leaderboard players={players} limit={0} />)
+    expect(screen.queryAllByRole('listitem')).toHaveLength(0)
+  })
+
+  it('shows everyone when `limit` exceeds the player count', () => {
+    render(<Leaderboard players={players} limit={10} />)
+    expect(rows()).toEqual(['Bob: 30', 'Cid: 20', 'Ann: 10'])
+  })
+
   it('shows players who share a name', () => {
     render(
       <Leaderboard
