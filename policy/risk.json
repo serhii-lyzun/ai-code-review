@@ -1,0 +1,51 @@
+{
+  "$comment": "Risk tiers for merge-gate.yml, evaluated by scripts/risk-tier.mjs. Globs: * matches within one path segment, ** across segments. Rules are checked in order: high, then low, then medium as the default.",
+  "high": {
+    "description": "Needs a human approval plus code-owner review (ruleset). AI review is advisory.",
+    "paths": [
+      ".github/**",
+      ".claude/**",
+      ".husky/**",
+      "policy/**",
+      "scripts/**",
+      "CLAUDE.md",
+      "REVIEW.md",
+      "CODE_CONVENTIONS.md",
+      "AI_CODE_REVIEW_PLAN.md",
+      "package.json",
+      "package-lock.json",
+      "tsconfig*.json",
+      "*.config.*",
+      ".oxlintrc.json",
+      ".prettierrc*",
+      ".nvmrc",
+      "index.html",
+      "src/test/**"
+    ],
+    "maxChangedLines": 400,
+    "branchPrefixes": ["hotfix/"]
+  },
+  "low": {
+    "description": "Can be auto-merged once every required check passes.",
+    "paths": [
+      "**/*.md",
+      "src/**/*.test.ts",
+      "src/**/*.test.tsx",
+      "src/assets/**",
+      "public/**"
+    ],
+    "maxChangedLines": 100,
+    "dependabot": {
+      "description": "Dependabot npm updates that only touch package.json and package-lock.json.",
+      "ecosystems": ["npm", "npm_and_yarn"],
+      "updateTypes": [
+        "version-update:semver-patch",
+        "version-update:semver-minor"
+      ],
+      "paths": ["package.json", "package-lock.json"]
+    }
+  },
+  "medium": {
+    "description": "Everything else: needs one human approval."
+  }
+}

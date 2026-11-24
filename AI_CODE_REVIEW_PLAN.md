@@ -503,7 +503,7 @@ diff, and auto-merge lands them in DEV when CI is green. Major versions are `ris
 
 ## 7. Merge and promotion policy
 
-### Risk tiers (`policy/risk.yml`, evaluated by a script, not by the LLM)
+### Risk tiers (`policy/risk.json`, evaluated by `scripts/risk-tier.mjs`, not by the LLM)
 
 | Tier       | Rule                                                                                          | Gate                                                                 |
 | ---------- | --------------------------------------------------------------------------------------------- | -------------------------------------------------------------------- |
@@ -679,9 +679,19 @@ sweep" of Sentry and opens or updates issues. Check that routines are available 
 
 ### Phase 3: Auto-merge to DEV · ~1 day
 
-- [ ] `policy/risk.yml` + `scripts/risk-tier.mjs` + `merge-gate.yml` (make `merge-gate` required)
-- [ ] `automerge` job for `risk:low`, starting with Dependabot and docs/test-only PRs
+- [x] `policy/risk.json` (JSON rather than YAML, so Node needs no parser dependency) + `scripts/risk-tier.mjs`, with
+      `node:test` tests (`npm run test:scripts`, run in CI). It checks high first, then low, then defaults to medium. A
+      rename counts both paths, so a file can't move out of a protected path unnoticed.
+- [x] `merge-gate.yml`: runs the base-branch copy of the classifier, sets a `risk:*` label, and requires one human
+      approval for medium and high. A `needs-human` label always fails it. It re-runs on every push, label and review.
+- [x] Auto-merge for `risk:low` inside `merge-gate.yml`, behind `AUTO_MERGE_ENABLED` (starts `false`). It turns
+      auto-merge off again when a push raises the tier. Dependabot update types come from `dependabot/fetch-metadata`,
+      which verifies that the commits are Dependabot's.
+- [ ] Make `merge-gate` a required check once it has run correctly on a few PRs
+- [ ] Turn on `AUTO_MERGE_ENABLED`, starting with Dependabot and docs/test-only PRs
 - [ ] Run 2–4 weeks, watch metrics, then consider widening the tiers
+- Note: auto-merge is enabled with `GITHUB_TOKEN`, so the resulting push to `main` doesn't start `push` workflows (CI on
+  `main`). The PR's checks already ran on the same changes. Use an App token if post-merge runs on `main` are needed.
 
 ### Phase 4: Environments · ~2 days
 

@@ -1,0 +1,168 @@
+name: Merge Gate
+
+# Phase 3: decides how much human review a PR needs, from its risk tier.
+#   low    - docs/tests/assets only (<= 100 lines), or a Dependabot npm patch or
+#            minor update. Passes without approval; with AUTO_MERGE_ENABLED=true
+#            the workflow enables auto-merge, so GitHub merges once every
+#            required check passes.
+#   medium - other changes. Needs one approval from a human other than the author.
+#   high   - protected paths, > 400 lines, hotfix/* branches. Needs one human
+#            approval here, plus code-owner review through the ruleset.
+# The tier comes from a trusted copy of scripts/risk-tier.mjs and
+# policy/risk.json on the base branch, so a PR can't reclassify itself, and
+# PR code is never checked out. A `needs-human` label always fails the gate.
+#
+# Solo maintainer: you can't approve your own PR, so medium and high PRs are
+# merged with `gh pr merge --admin`, which is a deliberate human decision.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review, labeled, unlabeled]
+  pull_request_review:
+    types: [submitted, edited, dismissed]
+
+concurrency:
+  # Every run recomputes everything from scratch, so the newest run wins.
+  group: merge-gate-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions: {}
+
+jobs:
+  merge-gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write # enable auto-merge
+      pull-requests: write # risk labels, auto-merge
+      issues: write # risk labels
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      REPO: ${{ github.repository }}
+      PR: ${{ github.event.pull_request.number }}
+      HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      HEAD_REF: ${{ github.event.pull_request.head.ref }}
+      BASE_REF: ${{ github.event.pull_request.base.ref }}
+      AUTHOR: ${{ github.event.pull_request.user.login }}
+      SAME_REPO: ${{ github.event.pull_request.head.repo.full_name == github.repository }}
+      DRAFT: ${{ github.event.pull_request.draft }}
+    steps:
+      # The base branch only: the classifier and policy must be trusted code.
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.base.ref }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      # Verifies the commits really come from Dependabot before reporting the
+      # update type, so a PR can't pose as a Dependabot patch update.
+      - name: Dependabot metadata
+        id: dependabot
+        if: github.event.pull_request.user.login == 'dependabot[bot]'
+        uses: dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98 # v3.1.0
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Classify the PR
+        id: tier
+        env:
+          ECOSYSTEM: ${{ steps.dependabot.outputs.package-ecosystem }}
+          UPDATE_TYPE: ${{ steps.dependabot.outputs.update-type }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/gate"
+          # Classifier and policy from base; the PR's copy only while they
+          # don't exist on base yet (the PR that adds them).
+          for f in scripts/risk-tier.mjs policy/risk.json; do
+            if [ ! -f "$f" ]; then
+              echo "::warning file=$f::$f isn't on $BASE_REF yet; using the PR's version"
+              mkdir -p "$(dirname "$f")"
+              gh api "repos/$REPO/contents/$f?ref=$HEAD_SHA" -H "Accept: application/vnd.github.raw" > "$f"
+            fi
+          done
+
+          gh api --paginate "repos/$REPO/pulls/$PR/files?per_page=100" \
+            --jq '.[] | {filename, previous_filename, additions, deletions}' | jq -s . > "$RUNNER_TEMP/gate/files.json"
+          jq -n --slurpfile files "$RUNNER_TEMP/gate/files.json" \
+            --arg branch "$HEAD_REF" --arg eco "$ECOSYSTEM" --arg type "$UPDATE_TYPE" \
+            '{files: $files[0], branch: $branch}
+             + (if $eco != "" and $type != "" then {dependabot: {ecosystem: $eco, updateType: $type}} else {} end)' \
+            > "$RUNNER_TEMP/gate/pr.json"
+
+          node scripts/risk-tier.mjs policy/risk.json "$RUNNER_TEMP/gate/pr.json" > "$RUNNER_TEMP/gate/tier.json"
+          tier=$(jq -r .tier "$RUNNER_TEMP/gate/tier.json")
+          echo "tier=$tier" >> "$GITHUB_OUTPUT"
+          echo "Risk tier: $tier"
+          jq -r '.reasons[] | "  - \(.)"' "$RUNNER_TEMP/gate/tier.json"
+
+      - name: Label the risk tier
+        if: env.SAME_REPO == 'true'
+        env:
+          TIER: ${{ steps.tier.outputs.tier }}
+        run: |
+          set -euo pipefail
+          current=$(gh pr view "$PR" --repo "$REPO" --json labels --jq '[.labels[].name | select(startswith("risk:"))] | join(",")')
+          if [ "$current" != "risk:$TIER" ]; then
+            [ -n "$current" ] && gh pr edit "$PR" --repo "$REPO" --remove-label "$current" >/dev/null
+            gh pr edit "$PR" --repo "$REPO" --add-label "risk:$TIER" >/dev/null
+          fi
+
+      - name: Decide
+        id: decide
+        env:
+          TIER: ${{ steps.tier.outputs.tier }}
+        run: |
+          set -euo pipefail
+          # Each human's latest decisive review (comments don't count); an
+          # approval dismissed by a new push no longer counts.
+          approvals=$(gh api --paginate "repos/$REPO/pulls/$PR/reviews?per_page=100" --jq '.[]' | jq -s --arg author "$AUTHOR" '
+            map(select(.user.type == "User" and .user.login != $author
+                       and (.state == "APPROVED" or .state == "CHANGES_REQUESTED" or .state == "DISMISSED")))
+            | group_by(.user.login) | map(last) | map(select(.state == "APPROVED")) | length')
+          needs_human=$(gh pr view "$PR" --repo "$REPO" --json labels --jq '[.labels[].name] | index("needs-human") != null')
+
+          if [ "$needs_human" = "true" ]; then
+            pass=false; why="the PR has the needs-human label"
+          elif [ "$TIER" = "low" ]; then
+            pass=true; why="low risk needs no approval"
+          elif [ "$approvals" -ge 1 ]; then
+            pass=true; why="$TIER risk, approved by $approvals human(s)"
+          else
+            pass=false; why="$TIER risk needs one approval from a human other than the author (solo maintainer: merge with --admin)"
+          fi
+          echo "pass=$pass" >> "$GITHUB_OUTPUT"
+          {
+            echo "## Merge gate: $([ "$pass" = true ] && echo pass || echo fail)"
+            echo
+            echo "**Risk tier:** \`$TIER\` · **Human approvals:** $approvals · **Decision:** $why"
+            echo
+            jq -r '.reasons[] | "- \(.)"' "$RUNNER_TEMP/gate/tier.json"
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "Decision: $why"
+
+      # Only for low risk, only when switched on. GitHub still merges only
+      # after every required check passes. Anything else turns auto-merge off,
+      # e.g. when a new push raises the tier.
+      - name: Auto-merge
+        if: env.SAME_REPO == 'true'
+        env:
+          TIER: ${{ steps.tier.outputs.tier }}
+          PASS: ${{ steps.decide.outputs.pass }}
+          ENABLED: ${{ vars.AUTO_MERGE_ENABLED }}
+        run: |
+          set -euo pipefail
+          auto=$(gh pr view "$PR" --repo "$REPO" --json autoMergeRequest --jq '.autoMergeRequest != null')
+          if [ "$ENABLED" = "true" ] && [ "$TIER" = "low" ] && [ "$PASS" = "true" ] && [ "$DRAFT" != "true" ]; then
+            if [ "$auto" != "true" ]; then
+              gh pr merge "$PR" --repo "$REPO" --auto --squash
+              echo "Auto-merge enabled"
+            fi
+          elif [ "$auto" = "true" ]; then
+            gh pr merge "$PR" --repo "$REPO" --disable-auto
+            echo "Auto-merge disabled (tier: $TIER, gate pass: $PASS, enabled: ${ENABLED:-unset})"
+          fi
+
+      - name: Gate result
+        env:
+          PASS: ${{ steps.decide.outputs.pass }}
+        run: test "$PASS" = "true"
