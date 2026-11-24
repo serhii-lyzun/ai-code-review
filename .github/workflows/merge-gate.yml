@@ -10,7 +10,9 @@ name: Merge Gate
 #            file list. Needs one human approval here; paths in CODEOWNERS
 #            also need code-owner review through the ruleset.
 # Only approvals from the owner, members and collaborators count (anyone can
-# submit a review on a public repo). A `needs-human` label always fails it.
+# submit a review on a public repo). On a personal-account repo every
+# collaborator has write access; in an organization, check the reviewer's
+# permission (collaborators/{login}/permission) instead. A `needs-human` label always fails it.
 #
 # The tier comes from the base branch's scripts/risk-tier.mjs and
 # policy/risk.json, and PR code is never checked out or run. If they aren't on
@@ -167,9 +169,10 @@ jobs:
 
       # Only for low risk, only when switched on. GitHub still merges only
       # after every required check passes. Anything else turns auto-merge off:
-      # a push that raises the tier, or any failed step above (always()).
+      # a push that raises the tier, or any failed step above. Not in runs that
+      # cancel-in-progress cancelled, so a stale run can't undo a newer one.
       - name: Auto-merge
-        if: always() && env.SAME_REPO == 'true'
+        if: ${{ !cancelled() && env.SAME_REPO == 'true' }}
         env:
           TIER: ${{ steps.tier.outputs.tier }}
           PASS: ${{ steps.decide.outputs.pass }}

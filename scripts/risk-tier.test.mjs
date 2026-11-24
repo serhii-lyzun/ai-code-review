@@ -103,6 +103,16 @@ describe('classify', () => {
     assert.equal(tier({ files: [file('scripts/risk-tier.mjs')] }), 'high')
   })
 
+  it('rates agent instruction files anywhere in the tree as high', () => {
+    assert.equal(tier({ files: [file('src/CLAUDE.md', 20)] }), 'high')
+    assert.equal(
+      tier({ files: [file('src/components/CLAUDE.local.md', 5)] }),
+      'high',
+    )
+    assert.equal(tier({ files: [file('docs/AGENTS.md', 5)] }), 'high')
+    assert.equal(tier({ files: [file('src/.claude/agents/x.md', 5)] }), 'high')
+  })
+
   it('rates a rename out of a protected path as high', () => {
     const renamed = file('docs/old-workflow.md', 0, 0, {
       previous_filename: '.github/workflows/ci.yml',

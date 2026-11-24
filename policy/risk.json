@@ -20,7 +20,11 @@
       ".prettierrc*",
       ".nvmrc",
       "index.html",
-      "src/test/**"
+      "src/test/**",
+      "**/CLAUDE.md",
+      "**/CLAUDE.local.md",
+      "**/AGENTS.md",
+      "**/.claude/**"
     ],
     "maxChangedLines": 400,
     "branchPrefixes": ["hotfix/"]
