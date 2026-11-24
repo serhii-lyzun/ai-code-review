@@ -6,18 +6,29 @@
 > YAML and config below are working starting points. Action inputs and CLI flags change between versions, so check
 > each one against the current docs of `anthropics/claude-code-action` and Claude Code before you rely on it.
 
+## Status (2026-11-24)
+
+| Area      | State                                                                                                                                                                                                                                                            |
+| --------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Phase 0   | **Done**: CI, Dependabot, CODEOWNERS, `REVIEW.md`, ruleset on `main` (with a CodeQL rule), secret scanning + push protection, CodeQL. The repo is **public**, because rulesets aren't available for private repos on the free plan.                              |
+| Phase 1   | **Done**: reviewer subagent, findings schema, opt-in `ai-review.yml`, planted-bug benchmark, opt-in `security-review.yml`, read-only `@claude` via `claude.yml`, the split test-severity rule in `REVIEW.md`. Not done: the `review-checklist` skill.            |
+| Phase 2   | **Built, not yet tested end to end**: `ai-fix.yml` (labels `ai-fix` / `needs-human`), the `ai-fixer` GitHub App, CI-only hook and deny rules, diff policy.                                                                                                       |
+| Labels    | Opt-in triggers: `ai-review` (CI review), `ai-fix` (one fix round), `security-review` (security pass); `@claude` mentions for interactive help. Everything also requires `AI_AGENTS_ENABLED=true` (currently on).                                                |
+| Benchmark | Local reviewer agent: **5/5** planted bugs caught, **0** false positives on the clean control PR. The one CI run (#7, XSS) matched the local result exactly. The planted-bug versions are tagged `benchmark/v1/<name>`; the answer key is kept outside the repo. |
+| Next      | Phase 2 end-to-end test, then Phase 3. See §15.                                                                                                                                                                                                                  |
+
 ---
 
 ## 0. TL;DR
 
-| Question                              | Answer                                                                                                                                                                                                                                        |
-| ------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| AI review on every PR?                | **Yes.** `anthropics/claude-code-action` runs a Claude Code **reviewer subagent** on `pull_request`. It posts inline comments and returns structured JSON that drives a required status check.                                                |
-| AI fixes review findings?             | **Yes**, a **fixer subagent** on the same PR branch, pushing as its own GitHub App identity, capped at 3 rounds. Claude Code **hooks** stop it from touching protected paths or weakening tests.                                              |
-| Auto-merge to **DEV** (`main`)?       | **Yes, for low-risk PRs.** GitHub **auto-merge** plus **rulesets** plus a `merge-gate` check. GitHub does the merge once every required check passes.                                                                                         |
-| Auto-merge to **STG**?                | **No merging.** STG is a GitHub **Environment**. The deploy workflow promotes the same build artifact automatically after DEV checks pass.                                                                                                    |
-| Auto-merge to **PRD**?                | **No.** PRD is a GitHub Environment with **required reviewers** and **prevent self-review** turned on, so a human approves every production deployment, AI hotfixes included.                                                                 |
-| PRD bug → AI fix → AI review → merge? | **Yes, up to the PRD approval.** Sentry alert → GitHub issue → Claude triage (Sentry MCP) → human adds `ai-fixable` → Claude writes a failing test and the fix → hotfix PR → Workflow A → human approves the PRD deploy. **Roll back first.** |
+| Question                              | Answer                                                                                                                                                                                                                                                                                                                |
+| ------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| AI review on every PR?                | **Yes, but review locally first.** Run the **reviewer subagent** in Claude Code before pushing, which costs no API spend. The same reviewer runs in CI through `anthropics/claude-code-action` on PRs labelled `ai-review`. It posts inline comments and returns structured JSON that drives a required status check. |
+| AI fixes review findings?             | **Yes, on demand.** A human adds the `ai-fix` label, and a **fixer subagent** fixes the blocker/major findings. A separate job pushes the result as its own GitHub App identity, capped at 3 rounds. Claude Code **hooks** and a diff policy stop it from touching protected paths or weakening tests.                |
+| Auto-merge to **DEV** (`main`)?       | **Yes, for low-risk PRs.** GitHub **auto-merge** plus **rulesets** plus a `merge-gate` check. GitHub does the merge once every required check passes.                                                                                                                                                                 |
+| Auto-merge to **STG**?                | **No merging.** STG is a GitHub **Environment**. The deploy workflow promotes the same build artifact automatically after DEV checks pass.                                                                                                                                                                            |
+| Auto-merge to **PRD**?                | **No.** PRD is a GitHub Environment with **required reviewers** and **prevent self-review** turned on, so a human approves every production deployment, AI hotfixes included.                                                                                                                                         |
+| PRD bug → AI fix → AI review → merge? | **Yes, up to the PRD approval.** Sentry alert → GitHub issue → Claude triage (Sentry MCP) → human adds `ai-fixable` → Claude writes a failing test and the fix → hotfix PR → Workflow A → human approves the PRD deploy. **Roll back first.**                                                                         |
 
 ---
 
@@ -112,20 +123,28 @@
 
 ### 4.1 Ruleset on `main` (Settings → Rules → Rulesets)
 
-| Rule                                                | Value                                                                          |
-| --------------------------------------------------- | ------------------------------------------------------------------------------ |
-| Restrict deletions, block force pushes              | On                                                                             |
-| Require linear history                              | On (squash merges)                                                             |
-| Require a pull request before merging               | On                                                                             |
-| Required approvals                                  | `0`: the human-approval rule lives in `merge-gate` so it can vary by risk tier |
-| Require review from Code Owners                     | **On**: high-risk paths always need a human code owner                         |
-| Dismiss stale approvals when new commits are pushed | **On**: an approval doesn't survive a later fixer push                         |
-| Require approval of the most recent reviewable push | **On**                                                                         |
-| Require conversation resolution                     | On                                                                             |
-| Required status checks                              | `ci`, `ai-review-gate`, `merge-gate`, `CodeQL`                                 |
-| Bypass list                                         | Empty (or repo admins only, for emergencies)                                   |
+| Rule                                                | Value                                                                              |
+| --------------------------------------------------- | ---------------------------------------------------------------------------------- |
+| Restrict deletions, block force pushes              | On                                                                                 |
+| Require linear history                              | On (squash merges)                                                                 |
+| Require a pull request before merging               | On                                                                                 |
+| Required approvals                                  | `0`: the human-approval rule lives in `merge-gate` so it can vary by risk tier     |
+| Require review from Code Owners                     | **On**: high-risk paths always need a human code owner                             |
+| Dismiss stale approvals when new commits are pushed | **On**: an approval doesn't survive a later fixer push                             |
+| Require approval of the most recent reviewable push | **On**                                                                             |
+| Require conversation resolution                     | On                                                                                 |
+| Allowed merge methods                               | Squash only                                                                        |
+| Required status checks                              | `ci`, `ai-review-gate` (both pinned to the GitHub Actions app); later `merge-gate` |
+| Code scanning                                       | CodeQL results must have no high-or-higher security alerts                         |
+| Bypass list                                         | Repo admins, **for pull requests only**: direct pushes stay blocked for everyone   |
 
-Also: Settings → General → **Allow auto-merge** = on, **Allow squash merging** only.
+**As implemented here:** ruleset `main`, created through the REST API. A solo maintainer can't approve their own PR, so
+CODEOWNERS-protected PRs are merged with `gh pr merge <n> --squash --admin`. With a team, remove the bypass and let a
+second code owner approve. Write squash messages yourself when the branch's commits quote a CI-skip token: GitHub honours
+them anywhere in the head commit message.
+
+Also: Settings → General → **Allow squash merging** only, **Automatically delete head branches** on. Turn on **Allow
+auto-merge** in Phase 3.
 
 ### 4.2 Environments (Settings → Environments)
 
@@ -143,8 +162,16 @@ never declare an `environment:`, so they can't read deployment secrets.
 - **Secrets:** `ANTHROPIC_API_KEY` (from a dedicated Console **workspace** with a spend limit), `AI_FIXER_APP_ID`,
   `AI_FIXER_PRIVATE_KEY`, `SENTRY_AUTH_TOKEN` (read-only scopes). Add `ANTHROPIC_API_KEY` to **Dependabot secrets**
   too, because Dependabot-triggered runs can't read Actions secrets.
-- **Variables:** `AI_AGENTS_ENABLED=true` (kill switch), `AI_MAX_FIX_ROUNDS=3`.
-- **Labels:** `risk:low`, `risk:medium`, `risk:high`, `ai-reviewed`, `needs-human`, `ai-fixable`, `sentry`, `hotfix`.
+- **Variables:** `AI_AGENTS_ENABLED` (kill switch, currently `true`), `AI_MAX_FIX_ROUNDS=3`.
+- **Environment `ai-fixer`:** holds `AI_FIXER_APP_ID` and `AI_FIXER_PRIVATE_KEY`, used only by the fixer's `push` job.
+- **Labels.** Keep two kinds apart:
+  - **Trigger labels** are verbs that a human adds to start an agent: `ai-review`, `ai-fix`, `security-review` (all
+    exist) and `ai-fixable` (Phase 5). On a public repo only people with triage access or higher can add labels, so labels
+    double as a permission check for paid runs.
+  - **State labels** are set by automation: `needs-human` (exists), `ai-reviewed`, `risk:low` / `risk:medium` /
+    `risk:high`, `sentry`, `hotfix`.
+  - Labels added with `GITHUB_TOKEN` don't trigger other workflows. An agent that labels for another workflow needs an
+    App token.
 
 ### 4.4 CODEOWNERS
 
@@ -303,8 +330,9 @@ read-only `SENTRY_AUTH_TOKEN`.
 ```
 PR opened/synchronized
  ├─ ci.yml: npm ci → lint → format:check → build → test           (required: ci)
- ├─ CodeQL + secret scanning + security-review.yml                 (required: CodeQL)
- └─ ai-review.yml
+ ├─ CodeQL + secret scanning                                       (required: CodeQL)
+ ├─ security-review.yml (only with the `security-review` label; not required)
+ └─ ai-review.yml (only with the `ai-review` label and AI_AGENTS_ENABLED=true; otherwise the gate passes)
      ├─ review:   reviewer subagent → inline comments + structured findings.json
      ├─ ai-review-gate: fails if any blocker/major                 (required: ai-review-gate)
      ├─ fix:      if blockers && round < 3 → fixer subagent → push (ai-fixer App) → re-triggers everything
@@ -605,20 +633,28 @@ sweep" of Sentry and opens or updates issues. Check that routines are available 
 ### Phase 1: AI reviewer, comment-only · ~1–2 days
 
 - [x] Anthropic Console: CI workspace, API key, spend limit → `ANTHROPIC_API_KEY` secret
-- [ ] `/install-github-app` in Claude Code (interactive `@claude`)
+- [x] `/install-github-app` in Claude Code: it installed the Claude GitHub App but added no workflow, so
+      `.github/workflows/claude.yml` was added by hand. `@claude` is **read-only** (answers, explanations, reviews) and
+      runs only when the mention and the issue or PR come from trusted accounts. An interactive agent that can push needs
+      the same split design as the fixer, so code changes go through `ai-fix` instead.
 - [x] `.claude/agents/reviewer.md`, `.claude/schemas/review-findings.json`
 - [ ] `review-checklist` skill
 - [x] `ai-review.yml` with only the `review` + `ai-review-gate` jobs, opt-in via the `ai-review` label
-- [ ] `security-review.yml` with `anthropics/claude-code-security-review`
+- [x] `security-review.yml` with `anthropics/claude-code-security-review`, **opt-in** via the `security-review` label
+      and pinned to a commit (the action has no release tags). It isn't a required check. The action isn't hardened
+      against prompt injection, so it runs only on same-repo PRs after a human adds the label.
 - [x] Benchmark: 6 PRs (5 planted bugs: page count rounding, stale closure in `useEffect`, `dangerouslySetInnerHTML`
       XSS, props mutation, async race; plus 1 clean control). Result: 5/5 caught, 0 false positives. `ai-review-gate` is
       now required.
-- [ ] Decide whether "missing test for new behavior" stays **major** in `REVIEW.md`. It was the most common extra
-      major finding in the benchmark.
+- [x] Test-gap severity in `REVIEW.md`, split by what the gap leaves unprotected. **Major:** a bug fix without a
+      regression test, or new or changed behavior with no test covering it. **Minor:** tested behavior with a coverage
+      gap. It was the
+      most common extra major finding in the benchmark.
 
 ### Phase 2: AI fixer · ~2 days
 
-- [ ] Create the `ai-fixer` GitHub App (contents/PRs/issues write), install it on the repo, add its secrets
+- [x] Create the `ai-fixer` GitHub App (contents/PRs/issues write; no webhook), install it on this repo only, and put
+      its secrets in the `ai-fixer` environment
 - [x] `.claude/agents/fixer.md` (Sonnet), `.claude/schemas/fix-result.json`
 - [x] `protect-paths.mjs` hook plus deny rules in **`.claude/ci-fixer-settings.json`**, loaded only by the CI fixer through
       the action's `settings` input. Putting them in `.claude/settings.json` would also block local sessions from
@@ -698,10 +734,9 @@ sweep" of Sentry and opens or updates issues. Check that routines are available 
 
 ## 15. Next step
 
-Phases 0 and 1 are done (see Status at the top). Next:
+Phases 0 and 1 are done, and Phase 2 is built (see Status at the top). Next:
 
-1. **Phase 2, the fixer:** create the `ai-fixer` GitHub App, then add `.claude/agents/fixer.md`, the protect-paths hook,
-   and a `fix` job triggered by an `ai-fix` label. Until then, the fixer loop runs by hand in Claude Code: local review →
-   fix → re-review, at most 3 rounds.
-2. Turn CI review back on (`AI_AGENTS_ENABLED=true`) when you want CI confirmations again.
-3. Clear the follow-ups in issue #11 and the open Phase 1 items (`security-review.yml`, `/install-github-app`).
+1. **Phase 2 end-to-end test:** open a PR with a planted bug, add `ai-review`, then `ai-fix`. Expect a commit from the
+   `ai-fixer` App and a passing re-review. Then test the round cap and `needs-human`.
+2. **Phase 3:** risk tiers (`policy/risk.yml`), `merge-gate`, and auto-merge for `risk:low` PRs.
+3. Follow-ups in issues #11 and #15, and the `review-checklist` skill.
