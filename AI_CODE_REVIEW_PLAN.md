@@ -647,7 +647,8 @@ sweep" of Sentry and opens or updates issues. Check that routines are available 
       XSS, props mutation, async race; plus 1 clean control). Result: 5/5 caught, 0 false positives. `ai-review-gate` is
       now required.
 - [x] Test-gap severity in `REVIEW.md`, split by what the gap leaves unprotected. **Major:** a bug fix without a
-      regression test, or new behavior with no test at all. **Minor:** tested behavior with a coverage gap. It was the
+      regression test, or new or changed behavior with no test covering it. **Minor:** tested behavior with a coverage
+      gap. It was the
       most common extra major finding in the benchmark.
 
 ### Phase 2: AI fixer · ~2 days

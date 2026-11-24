@@ -13,7 +13,7 @@ Oxlint, Prettier, `tsc -b` (strict flags) and Jest. Don't repeat what they repor
 | Severity    | Meaning                                                                                                                                                          | Blocks merge? |
 | ----------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------- |
 | **blocker** | Will break users or data: crash, wrong result, security hole, data loss, broken build path CI doesn't cover                                                      | Yes           |
-| **major**   | Real bug in an edge case, a broken Rule of React, an unhandled error path, a bug fix without a regression test, new behavior with no test at all                 | Yes           |
+| **major**   | Real bug in an edge case, a broken Rule of React, an unhandled error path, a bug fix without a regression test, new or changed behavior with no test covering it | Yes           |
 | **minor**   | Works, but is fragile, unclear or inconsistent with the codebase; tested behavior with a coverage gap (an untested edge case or branch); worth fixing in this PR | No            |
 | **nit**     | Taste: naming, small readability tweaks. Group these into one summary bullet                                                                                     | No            |
 

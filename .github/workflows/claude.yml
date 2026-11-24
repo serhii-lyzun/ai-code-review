@@ -12,6 +12,8 @@ name: Claude
 # outsiders in the same thread are still visible to Claude, so only mention it
 # on threads whose content you trust. It runs as the Claude GitHub App
 # (installed with /install-github-app) and only while AI_AGENTS_ENABLED is on.
+# The App token exchange requires this file to match the default branch, so it
+# works only once claude.yml is on main, and not on PRs that change it.
 #
 # One run per issue or PR at a time. GitHub keeps at most one pending run per
 # concurrency group, so a third quick mention replaces the second one.
@@ -70,14 +72,17 @@ jobs:
       - uses: anthropics/claude-code-action@v1
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
-          settings: .claude/ci-fixer-settings.json
+          settings: .claude/ci-readonly-settings.json
           # Lets Claude read CI results on PRs.
           additional_permissions: |
             actions: read
-          # Read-only: no file edits, no git writes. The disallow list wins over
-          # any tool the action allows by default.
+          # Read-only: no file edits, no git commands at all (`git diff
+          # --no-index` can print any file on the runner, and the deny rules in
+          # the settings file only cover Claude's own file tools). The disallow
+          # list wins over any tool the action allows by default.
           claude_args: >-
             --model claude-sonnet-5-5
             --max-turns 30
-            --allowedTools "Read,Grep,Glob,Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh issue view:*)"
-            --disallowedTools "Edit,Write,MultiEdit,NotebookEdit,Bash(git add:*),Bash(git commit:*),Bash(git push:*),Bash(git rm:*),Bash(git mv:*),Bash(git checkout:*),Bash(git reset:*),Bash(git branch:*),Bash(gh pr merge:*),Bash(gh pr edit:*),Bash(gh api:*)"
+            --append-system-prompt "This run is read-only: you cannot edit files, run git, commit or push. Answer in your reply comment. If code should change, say so and suggest adding the ai-fix label to the PR."
+            --allowedTools "Read,Grep,Glob,Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh issue view:*)"
+            --disallowedTools "Edit,Write,MultiEdit,NotebookEdit,Bash(git:*),Bash(gh pr merge:*),Bash(gh pr edit:*),Bash(gh pr comment:*),Bash(gh issue edit:*),Bash(gh issue comment:*),Bash(gh api:*)"
