@@ -1,0 +1,50 @@
+{
+  "title": "FixResult",
+  "description": "Structured result of an AI fix round. The workflow turns it into the commit message and a PR comment.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["summary", "fixed", "skipped"],
+  "properties": {
+    "summary": {
+      "type": "string",
+      "description": "1-3 sentences for the PR comment."
+    },
+    "fixed": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["title", "file", "change"],
+        "properties": {
+          "title": {
+            "type": "string",
+            "description": "Title of the finding that was fixed."
+          },
+          "file": {
+            "type": "string",
+            "description": "Main file changed, relative to the repo root."
+          },
+          "change": {
+            "type": "string",
+            "description": "One sentence: what changed and which test covers it."
+          }
+        }
+      }
+    },
+    "skipped": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["title", "reason"],
+        "properties": {
+          "title": {
+            "type": "string",
+            "description": "Title of the blocker or major finding that was not fixed."
+          },
+          "reason": { "type": "string", "description": "Why it was not fixed." }
+        }
+      }
+    }
+  }
+}

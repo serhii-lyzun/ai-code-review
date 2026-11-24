@@ -619,9 +619,19 @@ sweep" of Sentry and opens or updates issues. Check that routines are available 
 ### Phase 2: AI fixer · ~2 days
 
 - [ ] Create the `ai-fixer` GitHub App (contents/PRs/issues write), install it on the repo, add its secrets
-- [ ] `.claude/agents/fixer.md`, `.claude/settings.json` hooks + `protect-paths.mjs`
-- [ ] Add the `fix` job, at first triggered only on `@claude`/`/fix` from humans, then automatically on blockers
+- [x] `.claude/agents/fixer.md` (Sonnet), `.claude/schemas/fix-result.json`
+- [x] `protect-paths.mjs` hook plus deny rules in **`.claude/ci-fixer-settings.json`**, loaded only by the CI fixer through
+      the action's `settings` input. Putting them in `.claude/settings.json` would also block local sessions from
+      editing workflows and agent config.
+- [x] `.github/scripts/ai-fix-diff-policy.sh`: only `src/` may change, no silencing comments, no deleted test files, no
+      fewer `expect(` assertions. It runs on whatever Claude did, before commit.
+- [x] `ai-fix.yml`, triggered by a human adding the `ai-fix` label, using the findings artifact of the AI review of the
+      PR's current commit. Claude never holds a write token: the App token is created after Claude finishes, and
+      checkout doesn't persist credentials. The workflow, not Claude, commits and pushes.
+- [x] Labels `ai-fix` and `needs-human`, variable `AI_MAX_FIX_ROUNDS=3`
+- [ ] Verify end to end on a PR with a planted bug: review → `ai-fix` → new review passes
 - [ ] Verify the round cap and `needs-human` escalation on a PR the fixer can't solve
+- [ ] Later: trigger automatically on blocker/major findings instead of the label
 
 ### Phase 3: Auto-merge to DEV · ~1 day
 
