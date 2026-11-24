@@ -1,0 +1,60 @@
+name: Security Review
+
+# Opt-in Claude security pass (anthropics/claude-code-security-review). Runs
+# only on PRs labelled `security-review`: use it for PRs that touch user input,
+# rendering of user content, auth, secrets or dependencies. Adding the label
+# starts a scan; later pushes re-scan while it stays on. CodeQL, secret
+# scanning and the AI reviewer run independently of this.
+#
+# Not a required check: findings are PR comments for a human to weigh.
+# The action is not hardened against prompt injection, so it only runs on
+# same-repo PRs, after a human adds the label.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review, labeled]
+
+concurrency:
+  # Runs started by other labels get their own group, so they can't cancel a
+  # scan that is in progress.
+  group: >-
+    security-review-${{ github.event.pull_request.number }}${{
+    github.event.action == 'labeled' && github.event.label.name != 'security-review'
+    && format('-other-label-{0}', github.run_id) || '' }}
+  cancel-in-progress: true
+
+permissions: {}
+
+jobs:
+  security:
+    if: >-
+      vars.AI_AGENTS_ENABLED == 'true' &&
+      contains(github.event.pull_request.labels.*.name, 'security-review') &&
+      (github.event.action != 'labeled' || github.event.label.name == 'security-review') &&
+      !github.event.pull_request.draft &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.user.login != 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      pull-requests: write # PR comments with findings
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 2
+          persist-credentials: false
+
+      # Pinned to a commit: the action publishes no release tags.
+      - uses: anthropics/claude-code-security-review@0c6a49f1fa56a1d472575da86a94dbc1edb78eda
+        with:
+          claude-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
+          claude-model: claude-opus-5-5
+          comment-pr: true
+          upload-results: true
+          # Re-scan on every push while the label is on (the default scans a
+          # PR only once). Opt-in keeps the cost down.
+          run-every-commit: true
+          exclude-directories: node_modules,dist
+          claudecode-timeout: 20
