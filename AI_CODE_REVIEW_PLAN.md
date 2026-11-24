@@ -8,14 +8,15 @@
 
 ## Status (2026-11-24)
 
-| Area      | State                                                                                                                                                                                                                                                            |
-| --------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Phase 0   | **Done**: CI, Dependabot, CODEOWNERS, `REVIEW.md`, ruleset on `main` (with a CodeQL rule), secret scanning + push protection, CodeQL. The repo is **public**, because rulesets aren't available for private repos on the free plan.                              |
-| Phase 1   | **Done**: reviewer subagent, findings schema, opt-in `ai-review.yml`, planted-bug benchmark, opt-in `security-review.yml`, read-only `@claude` via `claude.yml`, the split test-severity rule in `REVIEW.md`. Not done: the `review-checklist` skill.            |
-| Phase 2   | **Built, not yet tested end to end**: `ai-fix.yml` (labels `ai-fix` / `needs-human`), the `ai-fixer` GitHub App, CI-only hook and deny rules, diff policy.                                                                                                       |
-| Labels    | Opt-in triggers: `ai-review` (CI review), `ai-fix` (one fix round), `security-review` (security pass); `@claude` mentions for interactive help. Everything also requires `AI_AGENTS_ENABLED=true` (currently on).                                                |
-| Benchmark | Local reviewer agent: **5/5** planted bugs caught, **0** false positives on the clean control PR. The one CI run (#7, XSS) matched the local result exactly. The planted-bug versions are tagged `benchmark/v1/<name>`; the answer key is kept outside the repo. |
-| Next      | Phase 2 end-to-end test, then Phase 3. See §15.                                                                                                                                                                                                                  |
+| Area      | State                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| --------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Phase 0   | **Done**: CI, Dependabot, CODEOWNERS, `REVIEW.md`, ruleset on `main` (with a CodeQL rule), secret scanning + push protection, CodeQL. The repo is **public**, because rulesets aren't available for private repos on the free plan.                                                                                                                                                                                                          |
+| Phase 1   | **Done**: reviewer subagent, findings schema, opt-in `ai-review.yml`, planted-bug benchmark, opt-in `security-review.yml`, read-only `@claude` via `claude.yml`, the split test-severity rule in `REVIEW.md`. Not done: the `review-checklist` skill.                                                                                                                                                                                        |
+| Phase 2   | **Done and tested end to end** on #17 (2026-11-24). A planted off-by-one got a blocker and a missing test got a major, so the gate failed. `ai-fix` then pushed `ai-fix: round 1` as `ai-code-review-fixer[bot]` with the fix and three tests, and the re-review passed. Read-only `@claude` answered correctly without changing code. Not yet tested: the round cap (`needs-human`), and a re-review triggered by the bot itself after #18. |
+| Labels    | Opt-in triggers: `ai-review` (CI review), `ai-fix` (one fix round), `security-review` (security pass); `@claude` mentions for interactive help. Everything also requires `AI_AGENTS_ENABLED=true` (currently on).                                                                                                                                                                                                                            |
+| Benchmark | Local reviewer agent: **5/5** planted bugs caught, **0** false positives on the clean control PR. The one CI run (#7, XSS) matched the local result exactly. The planted-bug versions are tagged `benchmark/v1/<name>`; the answer key is kept outside the repo.                                                                                                                                                                             |
+| Phase 3   | **Built** (#20): risk tiers (`policy/risk.json`, `scripts/risk-tier.mjs`), `merge-gate` with `risk:*` labels and an approval rule for medium and high, and auto-merge for `risk:low` behind `AUTO_MERGE_ENABLED` (off). Not yet a required check.                                                                                                                                                                                            |
+| Next      | Phase 3 rollout: watch `merge-gate`, make it required, then enable auto-merge. See §15.                                                                                                                                                                                                                                                                                                                                                      |
 
 ---
 
@@ -673,7 +674,8 @@ sweep" of Sentry and opens or updates issues. Check that routines are available 
 - [x] App secrets in the `ai-fixer` **environment**, not at repo level. Add required reviewers there to approve each
       round by hand.
 - [x] Labels `ai-fix` and `needs-human`, variable `AI_MAX_FIX_ROUNDS=3`
-- [ ] Verify end to end on a PR with a planted bug: review → `ai-fix` → new review passes
+- [x] Verify end to end on a PR with a planted bug: review → `ai-fix` → new review passes (#17). It needed two fixes,
+      both in §6.1's gotchas: install the App on the repo, and list the fixer bot in `allowed_bots` (#18).
 - [ ] Verify the round cap and `needs-human` escalation on a PR the fixer can't solve
 - [ ] Later: trigger automatically on blocker/major findings instead of the label
 
@@ -748,9 +750,10 @@ sweep" of Sentry and opens or updates issues. Check that routines are available 
 
 ## 15. Next step
 
-Phases 0 and 1 are done, and Phase 2 is built (see Status at the top). Next:
+Phases 0, 1 and 2 are done, and Phase 3 is built (see Status at the top). Next:
 
-1. **Phase 2 end-to-end test:** open a PR with a planted bug, add `ai-review`, then `ai-fix`. Expect a commit from the
-   `ai-fixer` App and a passing re-review. Then test the round cap and `needs-human`.
-2. **Phase 3:** risk tiers (`policy/risk.json`), `merge-gate`, and auto-merge for `risk:low` PRs.
+1. **Phase 3 rollout:** watch `merge-gate` on a few real PRs (docs-only → `risk:low`, code → `risk:medium`, Dependabot
+   npm patch → `risk:low`), then add `merge-gate` to the ruleset's required checks, then set `AUTO_MERGE_ENABLED=true`.
+2. Phase 2 leftovers: test the round cap and `needs-human` on a PR the fixer can't solve. The next `ai-fix` round will
+   also confirm a bot-triggered re-review after #18.
 3. Follow-ups in issues #11 and #15, and the `review-checklist` skill.
