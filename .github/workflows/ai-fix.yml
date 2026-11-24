@@ -8,7 +8,7 @@ name: AI Fix
 # AI_MAX_FIX_ROUNDS adds `needs-human`; adding `ai-fix` after that only
 # comments.
 #
-# Two jobs, so the App's write token never shares a runner with code Claude ran:
+# Separate jobs, so the App's write token never shares a runner with code Claude ran:
 #   fix  - no App secrets. Claude edits, then lint/build/tests run. Claude can
 #          run code (npm test), so nothing in this job is trusted. Its output is
 #          a patch file plus Claude's structured result, uploaded as an artifact.
@@ -19,6 +19,8 @@ name: AI Fix
 #          environment, which holds the App secrets.
 #   report - every outcome. Posts the PR comment and updates labels with the
 #          default GITHUB_TOKEN.
+#   retrigger-gate - only after report adds needs-human. actions: write, to
+#          re-run merge-gate (a GITHUB_TOKEN label doesn't start workflows).
 
 on:
   pull_request:
@@ -318,6 +320,8 @@ jobs:
     permissions:
       pull-requests: write
       issues: write
+    outputs:
+      needs_human: ${{ steps.comment.outputs.needs_human }}
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       STATUS: ${{ needs.fix.outputs.status }}
@@ -341,6 +345,7 @@ jobs:
           path: .ai-fix
 
       - name: Comment on the PR
+        id: comment
         run: |
           set -uo pipefail
           result=.ai-fix/result.json
@@ -402,5 +407,44 @@ jobs:
           gh pr comment "$PR" --repo "$REPO" --body-file "$RUNNER_TEMP/comment.md" || exit 1
           if [ "$needs_human" = "true" ]; then
             gh pr edit "$PR" --repo "$REPO" --add-label needs-human >/dev/null || exit 1
+            echo "needs_human=true" >> "$GITHUB_OUTPUT"
           fi
           exit 0
+
+  # A label added with GITHUB_TOKEN doesn't start workflows, so merge-gate
+  # wouldn't see needs-human until the next push or review, and a low-risk PR
+  # could auto-merge meanwhile. merge-gate reads labels live, so re-run its
+  # latest run for the PR's current head once that run has finished. Its own
+  # job, so actions: write never sits next to the fix job's untrusted output.
+  retrigger-gate:
+    needs: report
+    if: ${{ !cancelled() && needs.report.outputs.needs_human == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      actions: write
+      pull-requests: read
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Re-run merge-gate
+        run: |
+          set -uo pipefail
+          not_enforced() {
+            echo "::error::$1. needs-human isn't enforced by merge-gate until the next push or review; re-run merge-gate by hand."
+            exit 1
+          }
+          head=$(gh pr view "$PR" --repo "$REPO" --json headRefOid --jq .headRefOid) || not_enforced "Couldn't read the PR head"
+          for _ in $(seq 1 30); do
+            run=$(gh run list --repo "$REPO" --workflow merge-gate.yml --commit "$head" --limit 1 \
+                    --json databaseId,status --jq '.[0] // empty | "\(.databaseId) \(.status)"') || run=""
+            if [ -n "$run" ] && [ "${run#* }" = "completed" ]; then
+              if gh run rerun "${run%% *}" --repo "$REPO"; then
+                echo "Re-ran merge-gate run ${run%% *} for ${head:0:7}"
+                exit 0
+              fi
+              not_enforced "Re-running merge-gate run ${run%% *} failed"
+            fi
+            sleep 10
+          done
+          not_enforced "No finished merge-gate run for ${head:0:7} within about 6 minutes"
