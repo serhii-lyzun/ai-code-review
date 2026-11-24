@@ -378,6 +378,8 @@ The real workflow is `.github/workflows/ai-review.yml`; read it there rather tha
   trigger the re-review, so `ai-review.yml` lists exactly that bot (never `'*'`).
 - An App you create isn't usable until it's also **installed** on the repo. Without that, creating its token fails
   with `404 Not Found` (get a repository installation).
+- A label added with `GITHUB_TOKEN` doesn't start workflows, so a check that reads labels (`merge-gate`) has to be
+  re-run explicitly after automation changes them. The fixer's report job does that after adding `needs-human`.
 - The action hides Claude's output. An API key or billing problem shows up only as "no structured_output" with
   `num_turns: 1` and `$0` cost.
 
@@ -680,9 +682,10 @@ sweep" of Sentry and opens or updates issues. Check that routines are available 
 - [x] Labels `ai-fix` and `needs-human`, variable `AI_MAX_FIX_ROUNDS=3`
 - [x] Verify end to end on a PR with a planted bug: review → `ai-fix` → new review passes (#17). It needed two fixes,
       both in §6.1's gotchas: install the App on the repo, and list the fixer bot in `allowed_bots` (#18).
-- [ ] Verify the round cap and `needs-human` escalation on a PR the fixer can't solve. **Needs a test:** about 3 paid fix
-      rounds plus reviews on a PR whose finding needs a protected file changed. It also confirms the bot-triggered
-      re-review after #18.
+- [x] Verify the round cap and `needs-human` escalation (#23, 2026-11-24). Two simulated `ai-fix:` commits, then a real
+      round 3 of 3 that pushed the fix and added `needs-human`. A fourth `ai-fix` stopped at the limit without a Claude
+      call. The App's push ran the re-review (confirms #18). The test found one bug: `needs-human` was added with
+      `GITHUB_TOKEN`, so `merge-gate` didn't re-run and never saw it. The report job now re-runs `merge-gate`.
 - [ ] Later (optional): trigger automatically on blocker/major findings instead of the label. Do it only after the round
       cap is verified and the fixer has a track record.
 

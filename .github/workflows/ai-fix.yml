@@ -314,10 +314,11 @@ jobs:
     needs: [fix, push]
     if: ${{ !cancelled() && needs.fix.result != 'skipped' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
     permissions:
       pull-requests: write
       issues: write
+      actions: write # re-run merge-gate after adding needs-human
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       STATUS: ${{ needs.fix.outputs.status }}
@@ -341,6 +342,7 @@ jobs:
           path: .ai-fix
 
       - name: Comment on the PR
+        id: comment
         run: |
           set -uo pipefail
           result=.ai-fix/result.json
@@ -402,5 +404,28 @@ jobs:
           gh pr comment "$PR" --repo "$REPO" --body-file "$RUNNER_TEMP/comment.md" || exit 1
           if [ "$needs_human" = "true" ]; then
             gh pr edit "$PR" --repo "$REPO" --add-label needs-human >/dev/null || exit 1
+            echo "needs_human=true" >> "$GITHUB_OUTPUT"
           fi
           exit 0
+
+      # A label added with GITHUB_TOKEN doesn't start workflows, so merge-gate
+      # wouldn't see needs-human until the next push or review, and a low-risk
+      # PR could auto-merge meanwhile. merge-gate reads labels live, so re-run
+      # its latest run for the PR's current head once that run has finished.
+      - name: Re-run merge-gate
+        if: steps.comment.outputs.needs_human == 'true'
+        run: |
+          set -euo pipefail
+          head=$(gh pr view "$PR" --repo "$REPO" --json headRefOid --jq .headRefOid)
+          for attempt in $(seq 1 30); do
+            run=$(gh run list --repo "$REPO" --workflow merge-gate.yml --commit "$head" --limit 1 \
+                    --json databaseId,status --jq '.[0] // empty | "\(.databaseId) \(.status)"')
+            if [ -n "$run" ] && [ "${run#* }" = "completed" ]; then
+              gh run rerun "${run%% *}" --repo "$REPO"
+              echo "Re-ran merge-gate run ${run%% *} for ${head:0:7}"
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "::error::No finished merge-gate run for ${head:0:7} to re-run; needs-human isn't enforced until the next push or review"
+          exit 1
