@@ -1,0 +1,406 @@
+name: AI Fix
+
+# Phase 2: on-demand fixer. A human adds the `ai-fix` label to a PR that has an
+# AI review for its current commit. Claude fixes the blocker/major findings, and
+# one `ai-fix: round N` commit is pushed as the ai-fixer GitHub App. That push
+# triggers CI and, while the PR has the `ai-review` label, a new AI review.
+# Re-add `ai-fix` for the next round. The round that reaches
+# AI_MAX_FIX_ROUNDS adds `needs-human`; adding `ai-fix` after that only
+# comments.
+#
+# Two jobs, so the App's write token never shares a runner with code Claude ran:
+#   fix  - no App secrets. Claude edits, then lint/build/tests run. Claude can
+#          run code (npm test), so nothing in this job is trusted. Its output is
+#          a patch file plus Claude's structured result, uploaded as an artifact.
+#   push - only when there is a patch. Fresh runner, never runs npm or PR code.
+#          Applies the patch, checks it with a policy script copied BEFORE the
+#          patch is applied, then creates the App token, commits and pushes.
+#          CI re-checks the pushed commit. The only job in the ai-fixer
+#          environment, which holds the App secrets.
+#   report - every outcome. Posts the PR comment and updates labels with the
+#          default GITHUB_TOKEN.
+
+on:
+  pull_request:
+    types: [labeled]
+
+concurrency:
+  # One fix round per PR at a time; never cancel a round halfway through. The
+  # label name is part of the key, so other label events (which skip every
+  # job) can't replace a queued fix round.
+  group: ai-fix-${{ github.event.pull_request.number }}-${{ github.event.label.name }}
+  cancel-in-progress: false
+
+permissions: {}
+
+env:
+  REPO: ${{ github.repository }}
+  PR: ${{ github.event.pull_request.number }}
+  SHA: ${{ github.event.pull_request.head.sha }}
+  HEAD_REF: ${{ github.event.pull_request.head.ref }}
+  BASE_REF: ${{ github.base_ref }}
+  MAX_ROUNDS: ${{ vars.AI_MAX_FIX_ROUNDS || '3' }}
+  POLICY: .github/scripts/ai-fix-diff-policy.sh
+  HUSKY: '0'
+
+jobs:
+  fix:
+    # Only when a human adds `ai-fix`, with the kill switch on, on same-repo
+    # PRs (fork PRs never get secrets or write tokens), never on Dependabot PRs.
+    if: >-
+      github.event.label.name == 'ai-fix' &&
+      vars.AI_AGENTS_ENABLED == 'true' &&
+      github.event.sender.type == 'User' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.user.login != 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: read
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    outputs:
+      status: ${{ steps.prepare.outputs.status }}
+      done: ${{ steps.prepare.outputs.done }}
+      next: ${{ steps.prepare.outputs.next }}
+      changed: ${{ steps.verify.outputs.changed }}
+    steps:
+      # The exact reviewed commit. If the branch moves meanwhile, the final push
+      # isn't a fast-forward and fails instead of overwriting it.
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      # status: ok | stale | limit | no-review | nothing-to-fix
+      - name: Check the PR state and get the review findings
+        id: prepare
+        run: |
+          set -euo pipefail
+          mkdir -p .ai-fix
+          done_rounds=$(git log --oneline "origin/$BASE_REF..HEAD" --grep '^ai-fix:' | wc -l | tr -d ' ')
+          echo "done=$done_rounds" >> "$GITHUB_OUTPUT"
+          echo "next=$((done_rounds + 1))" >> "$GITHUB_OUTPUT"
+          echo "Fix rounds so far: $done_rounds (max $MAX_ROUNDS)"
+
+          live=$(gh pr view "$PR" --repo "$REPO" --json headRefOid --jq .headRefOid)
+          if [ "$live" != "$SHA" ]; then
+            echo "PR head moved from ${SHA:0:7} to ${live:0:7} since the label was added"
+            echo "status=stale" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ "$done_rounds" -ge "$MAX_ROUNDS" ]; then
+            echo "status=limit" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          found=""
+          for id in $(gh run list --repo "$REPO" --workflow ai-review.yml --commit "$SHA" --limit 100 \
+                        --json databaseId,createdAt --jq 'sort_by(.createdAt) | reverse | .[].databaseId'); do
+            if gh run download "$id" --repo "$REPO" -n ai-review-findings -D .ai-fix >/dev/null 2>&1; then
+              found=$id
+              break
+            fi
+          done
+          if [ -z "$found" ]; then
+            echo "status=no-review" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          blocking=$(jq '[.findings[] | select(.severity == "blocker" or .severity == "major")] | length' .ai-fix/findings.json)
+          echo "Using findings from AI Review run $found: $blocking blocker/major"
+          if [ "$blocking" = "0" ]; then
+            echo "status=nothing-to-fix" >> "$GITHUB_OUTPUT"
+          else
+            echo "status=ok" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Take the policy from the base branch (the PR's copy only while it isn't
+      # on base yet) before Claude runs. This copy only gives early feedback:
+      # code Claude runs could change it. The push job runs its own copy.
+      - name: Copy the diff policy
+        if: steps.prepare.outputs.status == 'ok'
+        run: |
+          if ! git show "origin/$BASE_REF:$POLICY" > "$RUNNER_TEMP/policy.sh" 2>/dev/null; then
+            cp "$POLICY" "$RUNNER_TEMP/policy.sh"
+          fi
+
+      - uses: actions/setup-node@v7
+        if: steps.prepare.outputs.status == 'ok'
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - if: steps.prepare.outputs.status == 'ok'
+        run: npm ci
+
+      - name: Load fix-result schema
+        id: schema
+        if: steps.prepare.outputs.status == 'ok'
+        run: |
+          set -euo pipefail
+          json=$(jq -c . .claude/schemas/fix-result.json)
+          if [[ "$json" == *"'"* ]]; then
+            echo "::error::fix-result.json must not contain single quotes (it is passed single-quoted in claude_args)"
+            exit 1
+          fi
+          echo "json=$json" >> "$GITHUB_OUTPUT"
+
+      - name: Claude fix
+        id: claude
+        if: steps.prepare.outputs.status == 'ok'
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          settings: .claude/ci-fixer-settings.json
+          prompt: |
+            REPO: ${{ github.repository }}
+            PR NUMBER: ${{ github.event.pull_request.number }}
+            FIX ROUND: ${{ steps.prepare.outputs.next }} of ${{ env.MAX_ROUNDS }}
+
+            Read .claude/agents/fixer.md and follow its instructions exactly. You are that fixer.
+            The findings to fix are in .ai-fix/findings.json (AI review of the current commit).
+            Fix every finding with severity blocker or major. Leave minor and nit findings alone.
+
+            You are running in CI. Edit files under src/ only, and not src/test/: a hook blocks
+            protected files and a diff check rejects anything else. Don't commit or push: the
+            workflow does that after checking your changes. Available commands: npm run lint,
+            npm run build, npm test, npx jest, git diff, git status. The workflow formats the
+            files you touch with Prettier, so you don't need to.
+
+            Finally return the structured result (summary, fixed, skipped).
+          claude_args: >-
+            --model claude-sonnet-5-5
+            --max-turns 40
+            --allowedTools "Read,Edit,Write,MultiEdit,Grep,Glob,Bash(npm run lint),Bash(npm run build),Bash(npm test),Bash(npx jest:*),Bash(git diff:*),Bash(git status)"
+            --json-schema '${{ steps.schema.outputs.json }}'
+
+      - name: Check the diff, verify, and build the patch
+        id: verify
+        if: steps.prepare.outputs.status == 'ok'
+        env:
+          RESULT: ${{ steps.claude.outputs.structured_output }}
+        run: |
+          set -euo pipefail
+          if [ -z "$RESULT" ]; then
+            echo "::error::Claude returned no structured result"
+            exit 1
+          fi
+          echo "$RESULT" > .ai-fix/result.json
+
+          # The action put .claude/ and CLAUDE.md back to the base versions
+          # before Claude ran; undo that so it doesn't end up in the patch.
+          git checkout HEAD -- .claude CLAUDE.md
+          git clean -fdq -- .claude
+
+          # Format what Claude touched (formatting isn't a policy question), then stage.
+          touched=()
+          while IFS= read -r -d '' file; do
+            [ -f "$file" ] && touched+=("$file")
+          done < <(git ls-files --modified --others --exclude-standard -z -- src)
+          if [ "${#touched[@]}" -gt 0 ]; then
+            npx prettier --write --ignore-unknown "${touched[@]}" >/dev/null
+          fi
+          git add -A
+
+          bash "$RUNNER_TEMP/policy.sh"
+
+          if git diff --cached --quiet; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          npm run lint
+          npm run format:check
+          npm run build
+          npm test
+
+          git diff --cached --binary --no-renames > .ai-fix/fix.patch
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v7
+        if: always() && steps.prepare.outputs.status == 'ok'
+        with:
+          name: ai-fix-result
+          path: |
+            .ai-fix/result.json
+            .ai-fix/fix.patch
+          if-no-files-found: ignore
+          include-hidden-files: true
+
+  push:
+    needs: fix
+    if: >-
+      !cancelled() && needs.fix.result == 'success' &&
+      needs.fix.outputs.status == 'ok' && needs.fix.outputs.changed == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # App secrets live in this environment. Required reviewers on it make each
+    # push wait for a human approval. Don't add a deployment-branch rule: on
+    # pull_request events the ref is refs/pull/N/merge, so it would block.
+    environment: ai-fixer
+    permissions:
+      contents: read
+    env:
+      ROUND: ${{ needs.fix.outputs.next }}
+    outputs:
+      sha: ${{ steps.push.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      # Copied before the patch is applied, so the patch can't change the
+      # policy that checks it.
+      - name: Copy the diff policy
+        run: |
+          if ! git show "origin/$BASE_REF:$POLICY" > "$RUNNER_TEMP/policy.sh" 2>/dev/null; then
+            cp "$POLICY" "$RUNNER_TEMP/policy.sh"
+          fi
+
+      - uses: actions/download-artifact@v7
+        with:
+          name: ai-fix-result
+          path: .ai-fix
+
+      - name: Apply and check the patch
+        run: |
+          set -euo pipefail
+          git apply --index .ai-fix/fix.patch
+          bash "$RUNNER_TEMP/policy.sh"
+
+      - name: Create ai-fixer App token
+        id: app
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.AI_FIXER_APP_ID }}
+          private-key: ${{ secrets.AI_FIXER_PRIVATE_KEY }}
+
+      - name: Commit and push
+        id: push
+        env:
+          TOKEN: ${{ steps.app.outputs.token }}
+          SLUG: ${{ steps.app.outputs.app-slug }}
+        run: |
+          set -euo pipefail
+          bot_id=$(GH_TOKEN="$TOKEN" gh api "/users/${SLUG}%5Bbot%5D" --jq .id)
+          git config user.name "${SLUG}[bot]"
+          git config user.email "${bot_id}+${SLUG}[bot]@users.noreply.github.com"
+          # The body is Claude's text. Strip anything that would stop CI or
+          # the AI review from re-checking this commit.
+          {
+            jq -r '.summary' .ai-fix/result.json
+            echo
+            jq -r '.fixed[] | "- Fixed: \(.title) (\(.file)): \(.change)"' .ai-fix/result.json
+            jq -r '.skipped[] | "- Skipped: \(.title): \(.reason)"' .ai-fix/result.json
+          } | sed -E ':a; s/\[(skip ci|ci skip|no ci|skip actions|actions skip)\]//I; ta; /^[[:space:]]*skip-checks[[:space:]]*:/Id' \
+            > "$RUNNER_TEMP/body.txt"
+          # Belt and braces: refuse to push if any skip token survived.
+          if grep -qiE '\[(skip ci|ci skip|no ci|skip actions|actions skip)\]|^[[:space:]]*skip-checks[[:space:]]*:' "$RUNNER_TEMP/body.txt"; then
+            echo "::error::Commit message still contains a CI-skip token"
+            exit 1
+          fi
+          { echo "ai-fix: round $ROUND for PR #$PR"; echo; cat "$RUNNER_TEMP/body.txt"; } > "$RUNNER_TEMP/commit-message.txt"
+          git commit -q -F "$RUNNER_TEMP/commit-message.txt"
+          git push "https://x-access-token:${TOKEN}@github.com/${REPO}.git" "HEAD:refs/heads/${HEAD_REF}"
+          echo "sha=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+
+  report:
+    needs: [fix, push]
+    if: ${{ !cancelled() && needs.fix.result != 'skipped' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      pull-requests: write
+      issues: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      STATUS: ${{ needs.fix.outputs.status }}
+      DONE: ${{ needs.fix.outputs.done }}
+      ROUND: ${{ needs.fix.outputs.next }}
+      CHANGED: ${{ needs.fix.outputs.changed }}
+      FIX_RESULT: ${{ needs.fix.result }}
+      PUSH_RESULT: ${{ needs.push.result }}
+      PUSHED: ${{ needs.push.outputs.sha }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      # First, so the label always comes off even if the comment fails.
+      - name: Remove the ai-fix label
+        run: gh pr edit "$PR" --repo "$REPO" --remove-label ai-fix >/dev/null || true
+
+      - uses: actions/download-artifact@v7
+        if: env.STATUS == 'ok'
+        continue-on-error: true
+        with:
+          name: ai-fix-result
+          path: .ai-fix
+
+      - name: Comment on the PR
+        run: |
+          set -uo pipefail
+          result=.ai-fix/result.json
+          round="${ROUND:-?}"
+          needs_human=false
+          # Claude's text, or a note when result.json is missing or malformed.
+          claude_text() {
+            jq -r "$1" "$result" 2>/dev/null || echo "_(no readable result from Claude)_"
+          }
+          {
+            if [ "$STATUS" = "limit" ]; then
+              echo "## AI fix: round limit reached"
+              echo
+              echo "This PR already has ${DONE:-0} AI fix rounds (max $MAX_ROUNDS). A human needs to take over."
+              needs_human=true
+            elif [ "$STATUS" = "stale" ]; then
+              echo "## AI fix: skipped, the PR changed"
+              echo
+              echo "The PR head moved after \`ai-fix\` was added for \`${SHA:0:7}\`. Wait for the AI review of the new commit, then add \`ai-fix\` again."
+            elif [ "$STATUS" = "no-review" ]; then
+              echo "## AI fix: no review to work from"
+              echo
+              echo "There's no AI review for commit \`${SHA:0:7}\`. Add the \`ai-review\` label, wait for the review, then add \`ai-fix\` again."
+            elif [ "$STATUS" = "nothing-to-fix" ]; then
+              echo "## AI fix: nothing to fix"
+              echo
+              echo "The AI review of \`${SHA:0:7}\` has no blocker or major findings."
+            elif [ "$PUSH_RESULT" = "success" ] && [ -n "$PUSHED" ]; then
+              echo "## AI fix: round $round of $MAX_ROUNDS pushed as \`$PUSHED\`"
+              echo
+              claude_text '.summary'
+              echo
+              claude_text '.fixed[] | "- **Fixed:** \(.title) (`\(.file)`): \(.change)"'
+              claude_text '.skipped[] | "- **Skipped:** \(.title): \(.reason)"'
+              echo
+              if [ "${ROUND:-0}" -ge "$MAX_ROUNDS" ]; then
+                echo "That was the last allowed round. If the new review still has blocker or major findings, a human needs to take over."
+                needs_human=true
+              else
+                echo "CI and (with the \`ai-review\` label) a new AI review run on the new commit. Add \`ai-fix\` again for another round."
+              fi
+            elif [ "$FIX_RESULT" = "success" ] && [ "$CHANGED" = "false" ]; then
+              echo "## AI fix: no changes made"
+              echo
+              claude_text '.summary'
+              claude_text '.skipped[] | "- **Skipped:** \(.title): \(.reason)"'
+            elif [ "$FIX_RESULT" = "success" ] && [ "$PUSH_RESULT" = "failure" ]; then
+              echo "## AI fix: round $round passed its checks but wasn't pushed"
+              echo
+              echo "The patch passed the fix job's checks, but the push job failed: the patch was rejected by the policy re-check, the App token couldn't be created (is the ai-fixer App installed on this repo?), or the branch moved and the push wasn't a fast-forward. See the [run log]($RUN_URL)."
+            else
+              echo "## AI fix: round $round failed, nothing was pushed"
+              echo
+              echo "Claude didn't finish, or the fix didn't pass the diff policy or lint/build/tests (fix job: $FIX_RESULT). See the [run log]($RUN_URL)."
+            fi
+            echo
+            echo "<sub>[AI Fix run]($RUN_URL)</sub>"
+          } > "$RUNNER_TEMP/comment.md"
+          gh pr comment "$PR" --repo "$REPO" --body-file "$RUNNER_TEMP/comment.md" || exit 1
+          if [ "$needs_human" = "true" ]; then
+            gh pr edit "$PR" --repo "$REPO" --add-label needs-human >/dev/null || exit 1
+          fi
+          exit 0

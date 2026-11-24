@@ -1,0 +1,30 @@
+{
+  "permissions": {
+    "deny": [
+      "Read(./.env*)",
+      "Edit(./.github/**)",
+      "Edit(./.claude/**)",
+      "Edit(./.husky/**)",
+      "Edit(./CLAUDE.md)",
+      "Edit(./REVIEW.md)",
+      "Edit(./CODE_CONVENTIONS.md)",
+      "Edit(./AI_CODE_REVIEW_PLAN.md)",
+      "Edit(./package.json)",
+      "Edit(./package-lock.json)",
+      "Edit(./src/test/**)"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write|MultiEdit|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PROJECT_DIR/.claude/hooks/protect-paths.mjs\""
+          }
+        ]
+      }
+    ]
+  }
+}
