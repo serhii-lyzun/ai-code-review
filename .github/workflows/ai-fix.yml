@@ -8,7 +8,7 @@ name: AI Fix
 # AI_MAX_FIX_ROUNDS adds `needs-human`; adding `ai-fix` after that only
 # comments.
 #
-# Two jobs, so the App's write token never shares a runner with code Claude ran:
+# Separate jobs, so the App's write token never shares a runner with code Claude ran:
 #   fix  - no App secrets. Claude edits, then lint/build/tests run. Claude can
 #          run code (npm test), so nothing in this job is trusted. Its output is
 #          a patch file plus Claude's structured result, uploaded as an artifact.
@@ -19,6 +19,8 @@ name: AI Fix
 #          environment, which holds the App secrets.
 #   report - every outcome. Posts the PR comment and updates labels with the
 #          default GITHUB_TOKEN.
+#   retrigger-gate - only after report adds needs-human. actions: write, to
+#          re-run merge-gate (a GITHUB_TOKEN label doesn't start workflows).
 
 on:
   pull_request:
