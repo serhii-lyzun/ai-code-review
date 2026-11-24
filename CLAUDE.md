@@ -30,7 +30,9 @@ This is a Vite + React + TypeScript template with tooling added: Prettier, Husky
 ## CI and AI code review
 
 - `.github/workflows/ci.yml` runs `npm ci`, `lint`, `format:check`, `build` and `test` on every PR and on pushes to `main`. Node version comes from `.nvmrc`.
-- `.github/workflows/ai-review.yml` runs Claude as a comment-only PR reviewer. It posts inline comments and a summary, and the `ai-review-gate` job fails on blocker/major findings. It runs only when the repository variable `AI_AGENTS_ENABLED` is `true`.
+- `.github/workflows/ai-review.yml` runs Claude as a comment-only PR reviewer. It posts inline comments and a summary, and the `ai-review-gate` job fails on blocker/major findings. It is opt-in: it runs only on PRs labelled `ai-review`, and only when the repository variable `AI_AGENTS_ENABLED` is `true`. Without the label (or after removing it) the review is skipped and the gate passes. Adding or removing any other label never reviews: the gate repeats the commit's previous result, and fails while there is no passing result yet.
+- Workflow: review locally with the reviewer agent before pushing, fix its findings (at most 3 review rounds; log the leftover minors as an issue), then add the `ai-review` label if you want the CI confirmation.
+- `main` is protected by a ruleset: PRs only, squash merges only, required checks `ci` and `ai-review-gate`, resolved review threads, and code-owner review for the paths in `.github/CODEOWNERS`. The sole code owner merges those PRs with `gh pr merge <n> --squash --admin`.
 - Review rules live in `REVIEW.md` (severity scale, what to check and ignore). The reviewer prompt is `.claude/agents/reviewer.md` and its output schema is `.claude/schemas/review-findings.json`. The same subagent reviews local changes (ask Claude Code to "use the reviewer agent").
 - The full roadmap (fixer agent, auto-merge, environments, production bug pipeline) is in `AI_CODE_REVIEW_PLAN.md`.
 

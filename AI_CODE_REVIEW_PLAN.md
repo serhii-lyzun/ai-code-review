@@ -317,129 +317,106 @@ GitHub merges when all required checks are green.
 
 ### 6.1 `ai-review.yml`
 
+The real workflow is `.github/workflows/ai-review.yml`; read it there rather than copying from this plan. Its design:
+
+- **Opt-in and kill switch.** It reviews only PRs labelled `ai-review`, and only while `AI_AGENTS_ENABLED=true`. Drafts,
+  forks and Dependabot PRs are skipped.
+- **Rules from `main`.** `REVIEW.md`, `CODE_CONVENTIONS.md`, `CLAUDE.md`, `reviewer.md` and the schema are taken from the
+  base branch, so a PR can't weaken its own review by editing them. Edits to the workflow file itself are guarded only
+  by CODEOWNERS plus the ruleset.
+- **Read-only reviewer.** Claude gets only `git diff/log/show`, `gh pr view --json`/`gh pr diff`, Read/Grep/Glob and the
+  inline-comment tool. It never runs npm: the `ci` check covers lint, build and tests, and running PR code next to the
+  API key is a risk.
+- **Structured result.** `--json-schema` returns the findings as JSON. The workflow derives the verdict from the
+  blocker/major count (the same rule as the gate), posts **one summary comment** that it edits on every push, and skips
+  re-posting inline findings that already have an open comment.
+- **Gate.** `ai-review-gate` fails on any blocker/major finding and when the review itself fails. It passes when the
+  review is skipped on purpose, including after the `ai-review` label is removed. Runs triggered by adding or removing
+  any other label repeat the commit's previous completed gate result, and pass only if it passed, so adding a label
+  can't flip a failure to a pass. Limit: that previous result can predate a review that is still running (e.g. the
+  skipped-review pass from when the PR was opened without the label), so wait for the review to finish before merging.
+  Also, removing `ai-review` passes the gate by design: with opt-in, the gate is a strong default, not an enforcement
+  anyone with triage access can't undo.
+- **Least privilege and cost.** Top-level `permissions: {}`, `--max-turns 30`, `timeout-minutes`, and a concurrency group
+  per PR. The job summary shows cost, turns and duration per run.
+
+**Gotchas found while building it:**
+
+- Claude Code's `--json-schema` rejects a `$schema: draft 2020-12` line. Leave `$schema` out.
+- Plain `gh pr view` also queries check status, which the job token can't read. Always pass `--json`.
+- `use_sticky_comment` only covers the action's own progress comment, not comments Claude posts.
+- The action hides Claude's output. An API key or billing problem shows up only as "no structured_output" with
+  `num_turns: 1` and `$0` cost.
+
+**Planned additions (Phase 2 and 3), not in the file yet:**
+
 ```yaml
-name: AI Review
-on:
-  pull_request:
-    types: [opened, synchronize, reopened, ready_for_review]
+fix:
+  needs: review
+  # same-repo PRs only: fork PRs never get a write token.
+  # result == 'success': when the review is skipped, `blocking` is empty and '' != '0' would be true.
+  if: needs.review.result == 'success' && needs.review.outputs.blocking != '0' && github.event.pull_request.head.repo.full_name == github.repository
+  runs-on: ubuntu-latest
+  timeout-minutes: 30
+  permissions:
+    contents: read
+    id-token: write
+  steps:
+    - id: app
+      uses: actions/create-github-app-token@v2
+      with:
+        app-id: ${{ secrets.AI_FIXER_APP_ID }}
+        private-key: ${{ secrets.AI_FIXER_PRIVATE_KEY }}
+    - uses: actions/checkout@v7
+      with:
+        ref: ${{ github.head_ref }}
+        token: ${{ steps.app.outputs.token }}
+        fetch-depth: 0
+    - uses: actions/download-artifact@v7
+      with:
+        name: ai-review-findings
+    - id: round
+      run: |
+        n=$(git log "origin/${{ github.base_ref }}..HEAD" --grep '^ai-fix:' --oneline | wc -l | tr -d ' ')
+        echo "n=$n" >> "$GITHUB_OUTPUT"
+    - if: fromJSON(steps.round.outputs.n) >= fromJSON(vars.AI_MAX_FIX_ROUNDS)
+      env:
+        GH_TOKEN: ${{ steps.app.outputs.token }}
+      run: |
+        gh pr edit ${{ github.event.pull_request.number }} --add-label needs-human
+        gh pr comment ${{ github.event.pull_request.number }} --body "AI fix limit reached. A human needs to take over."
+    - if: fromJSON(steps.round.outputs.n) < fromJSON(vars.AI_MAX_FIX_ROUNDS)
+      uses: actions/setup-node@v7
+      with:
+        node-version-file: .nvmrc
+        cache: npm
+    - if: fromJSON(steps.round.outputs.n) < fromJSON(vars.AI_MAX_FIX_ROUNDS)
+      run: npm ci
+    - if: fromJSON(steps.round.outputs.n) < fromJSON(vars.AI_MAX_FIX_ROUNDS)
+      uses: anthropics/claude-code-action@v1
+      with:
+        anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+        github_token: ${{ steps.app.outputs.token }}
+        prompt: |
+          Use the fixer subagent. The findings are in ./findings.json.
+          Fix round ${{ steps.round.outputs.n }}. Commit with prefix "ai-fix: " and push to ${{ github.head_ref }}.
+        claude_args: >-
+          --model claude-sonnet-5-5
+          --max-turns 40
 
-concurrency:
-  group: ai-review-${{ github.event.pull_request.number }}
-  cancel-in-progress: true
-
-jobs:
-  review:
-    if: vars.AI_AGENTS_ENABLED == 'true' && !github.event.pull_request.draft
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    permissions:
-      contents: read
-      pull-requests: write
-      id-token: write
-    outputs:
-      blockers: ${{ steps.parse.outputs.blockers }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - id: claude
-        uses: anthropics/claude-code-action@v1
-        with:
-          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          track_progress: true
-          prompt: |
-            Use the reviewer subagent to review PR #${{ github.event.pull_request.number }}
-            in ${{ github.repository }}. Post inline comments for findings, then return the findings.
-          claude_args: >-
-            --model claude-opus-5-5
-            --max-turns 25
-            --json-schema .claude/schemas/review-findings.json
-      - id: parse
-        env:
-          OUT: ${{ steps.claude.outputs.structured_output }}
-        run: |
-          echo "$OUT" > findings.json
-          n=$(jq '[.findings[] | select(.severity=="blocker" or .severity=="major")] | length' findings.json)
-          echo "blockers=$n" >> "$GITHUB_OUTPUT"
-      - uses: actions/upload-artifact@v4
-        with:
-          name: findings
-          path: findings.json
-
-  ai-review-gate:
-    needs: review
-    runs-on: ubuntu-latest
-    steps:
-      - run: |
-          echo "Blocking findings: ${{ needs.review.outputs.blockers }}"
-          test "${{ needs.review.outputs.blockers }}" = "0"
-
-  fix:
-    needs: review
-    # same-repo PRs only: fork PRs never get a write token
-    if: needs.review.outputs.blockers != '0' && github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    permissions:
-      contents: read
-      id-token: write
-    steps:
-      - id: app
-        uses: actions/create-github-app-token@v2
-        with:
-          app-id: ${{ secrets.AI_FIXER_APP_ID }}
-          private-key: ${{ secrets.AI_FIXER_PRIVATE_KEY }}
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.head_ref }}
-          token: ${{ steps.app.outputs.token }}
-          fetch-depth: 0
-      - uses: actions/download-artifact@v4
-        with:
-          name: findings
-      - id: round
-        run: |
-          n=$(git log "origin/${{ github.base_ref }}..HEAD" --grep '^ai-fix:' --oneline | wc -l | tr -d ' ')
-          echo "n=$n" >> "$GITHUB_OUTPUT"
-      - if: fromJSON(steps.round.outputs.n) >= fromJSON(vars.AI_MAX_FIX_ROUNDS)
-        env:
-          GH_TOKEN: ${{ steps.app.outputs.token }}
-        run: |
-          gh pr edit ${{ github.event.pull_request.number }} --add-label needs-human
-          gh pr comment ${{ github.event.pull_request.number }} --body "AI fix limit reached. A human needs to take over."
-      - if: fromJSON(steps.round.outputs.n) < fromJSON(vars.AI_MAX_FIX_ROUNDS)
-        uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-      - if: fromJSON(steps.round.outputs.n) < fromJSON(vars.AI_MAX_FIX_ROUNDS)
-        run: npm ci
-      - if: fromJSON(steps.round.outputs.n) < fromJSON(vars.AI_MAX_FIX_ROUNDS)
-        uses: anthropics/claude-code-action@v1
-        with:
-          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
-          github_token: ${{ steps.app.outputs.token }}
-          prompt: |
-            Use the fixer subagent. The findings are in ./findings.json.
-            Fix round ${{ steps.round.outputs.n }}. Commit with prefix "ai-fix: " and push to ${{ github.head_ref }}.
-          claude_args: >-
-            --model claude-sonnet-5-5
-            --max-turns 40
-
-  automerge:
-    needs: [review, ai-review-gate]
-    if: contains(github.event.pull_request.labels.*.name, 'risk:low') && !contains(github.event.pull_request.labels.*.name, 'needs-human')
-    runs-on: ubuntu-latest
-    steps:
-      - id: app
-        uses: actions/create-github-app-token@v2
-        with:
-          app-id: ${{ secrets.AI_FIXER_APP_ID }}
-          private-key: ${{ secrets.AI_FIXER_PRIVATE_KEY }}
-      - env:
-          GH_TOKEN: ${{ steps.app.outputs.token }}
-        run: gh pr merge ${{ github.event.pull_request.number }} --repo ${{ github.repository }} --auto --squash
+automerge:
+  needs: [review, ai-review-gate]
+  if: contains(github.event.pull_request.labels.*.name, 'risk:low') && !contains(github.event.pull_request.labels.*.name, 'needs-human')
+  runs-on: ubuntu-latest
+  steps:
+    - id: app
+      uses: actions/create-github-app-token@v2
+      with:
+        app-id: ${{ secrets.AI_FIXER_APP_ID }}
+        private-key: ${{ secrets.AI_FIXER_PRIVATE_KEY }}
+    - env:
+        GH_TOKEN: ${{ steps.app.outputs.token }}
+      run: gh pr merge ${{ github.event.pull_request.number }} --repo ${{ github.repository }} --auto --squash
 ```
 
 ### 6.2 `merge-gate.yml`: human approval by risk tier
@@ -568,10 +545,15 @@ sweep" of Sentry and opens or updates issues. Check that routines are available 
 
 1. Work with Claude Code locally. `CLAUDE.md`, `.claude/agents`, skills, hooks and `.mcp.json` are shared through the repo,
    so everyone gets the same agent behavior.
-2. Before pushing: run `/code-review` (correctness) and `/security-review` in Claude Code. Fixing things locally is cheaper
-   than CI rounds.
-3. Husky + lint-staged runs on commit (already set up).
-4. Open the PR → Workflow A. Reply to AI comments with 👍/👎 (used for metrics) or `@claude` for clarification.
+2. Before pushing, ask Claude Code to **"use the reviewer agent on this branch"**. It applies the same `REVIEW.md` and
+   severity scale as CI, so its verdict predicts the gate, and it costs no API spend. The built-in `/code-review` and
+   `/security-review` make a useful independent second opinion, but they don't follow `REVIEW.md`.
+3. Fix the findings and re-review. Stop after **3 rounds**: blocker and major findings were all fixed in one round on
+   every benchmark PR, but each later round finds new, smaller minors. Log the leftover minors as an issue.
+4. Husky + lint-staged runs on commit (already set up).
+5. Open the PR. Iterate as a **draft**, then mark it ready. Add the `ai-review` label when you want the paid CI
+   confirmation (and `AI_AGENTS_ENABLED=true`). Reply to AI comments with 👍/👎 (used for metrics) or `@claude` for
+   clarification.
 
 ---
 
@@ -587,9 +569,13 @@ sweep" of Sentry and opens or updates issues. Check that routines are available 
 - [ ] Hooks + `permissions.deny` block agents from editing `.github/`, `.claude/`, `CLAUDE.md`, `REVIEW.md`.
 - [ ] Every Claude step has `--max-turns` and a job `timeout-minutes`. Every workflow has a concurrency group per PR.
 - [ ] Console workspace for CI with a monthly **spend limit**. Separate API key per workspace.
-- [ ] Kill switch: set `AI_AGENTS_ENABLED=false` and all agent jobs skip.
-- [ ] Secret scanning **push protection** on, so an agent can't commit a secret.
-- [ ] Dependabot + `npm ci` lockfile, so AI-suggested packages go through review and the `package.json` CODEOWNER.
+- [x] Kill switch: set `AI_AGENTS_ENABLED=false` and all agent jobs skip.
+- [x] Opt-in label `ai-review`, so paid CI reviews run only when asked for.
+- [x] A required check that is skipped counts as passing, so a review that _fails_ must fail the gate (`if: always()`),
+      and unrelated label events must not overwrite an earlier gate failure.
+- [x] Secret scanning **push protection** on, so an agent can't commit a secret.
+- [x] Dependabot + `npm ci` lockfile, so AI-suggested packages go through review and the `package.json` CODEOWNER.
+- [x] Keep `@types/node` on the Node major you run (`.nvmrc`). Dependabot ignores its major updates; bump both together.
 
 ---
 
@@ -609,21 +595,26 @@ sweep" of Sentry and opens or updates issues. Check that routines are available 
 
 ### Phase 0: Foundations · ~1 day
 
-- [ ] `ci.yml` (lint, format:check, build, test) and CodeQL default setup
-- [ ] Ruleset on `main` (§4.1), allow auto-merge, squash only
-- [ ] Secret scanning + push protection, Dependabot
-- [ ] Add a CI and AI-review section to `CLAUDE.md`, add `REVIEW.md`
-- [ ] Labels, variables (`AI_AGENTS_ENABLED`, `AI_MAX_FIX_ROUNDS`), CODEOWNERS
+- [x] `ci.yml` (lint, format:check, build, test) and CodeQL default setup
+- [x] Ruleset on `main` (§4.1), squash only. Auto-merge waits for Phase 3.
+- [x] Secret scanning + push protection, Dependabot
+- [x] Add a CI and AI-review section to `CLAUDE.md`, add `REVIEW.md`
+- [x] Variables (`AI_AGENTS_ENABLED`), CODEOWNERS, the `ai-review` label. `AI_MAX_FIX_ROUNDS` and the other labels come
+      with the phases that use them.
 
 ### Phase 1: AI reviewer, comment-only · ~1–2 days
 
-- [ ] Anthropic Console: CI workspace, API key, spend limit → `ANTHROPIC_API_KEY` secret
+- [x] Anthropic Console: CI workspace, API key, spend limit → `ANTHROPIC_API_KEY` secret
 - [ ] `/install-github-app` in Claude Code (interactive `@claude`)
-- [ ] `.claude/agents/reviewer.md`, `.claude/schemas/review-findings.json`, `review-checklist` skill
-- [ ] `ai-review.yml` with only the `review` + `ai-review-gate` jobs (gate **not required** yet)
+- [x] `.claude/agents/reviewer.md`, `.claude/schemas/review-findings.json`
+- [ ] `review-checklist` skill
+- [x] `ai-review.yml` with only the `review` + `ai-review-gate` jobs, opt-in via the `ai-review` label
 - [ ] `security-review.yml` with `anthropics/claude-code-security-review`
-- [ ] Benchmark: 5–10 PRs with **planted bugs** (off-by-one, missing null check, stale closure in `useEffect`,
-      `dangerouslySetInnerHTML` XSS, missing test). Tune until precision is above 70%, then make `ai-review-gate` required.
+- [x] Benchmark: 6 PRs (5 planted bugs: page count rounding, stale closure in `useEffect`, `dangerouslySetInnerHTML`
+      XSS, props mutation, async race; plus 1 clean control). Result: 5/5 caught, 0 false positives. `ai-review-gate` is
+      now required.
+- [ ] Decide whether "missing test for new behavior" stays **major** in `REVIEW.md`. It was the most common extra
+      major finding in the benchmark.
 
 ### Phase 2: AI fixer · ~2 days
 
@@ -654,22 +645,26 @@ sweep" of Sentry and opens or updates issues. Check that routines are available 
 
 ### Phase 6: Observability and tuning · ongoing
 
-- [ ] Claude Code OpenTelemetry (`CLAUDE_CODE_ENABLE_TELEMETRY=1` + OTLP exporter) → cost, turns, tool use per agent
-- [ ] Monthly prompt and model review against the planted-bug benchmark
+- [x] Cost, turns and duration per CI review in the job summary (from the action's `execution_file`), plus Console usage
+      for the CI workspace. That's enough at this scale.
+- [ ] Local OpenTelemetry stack (the `ai-monitoring` skill) while benchmarking prompts or models locally
+- [ ] Hosted OpenTelemetry for CI only once several repos or teams run agents
+- [ ] Print Claude's error text in the CI log when no structured result comes back
+- [ ] Monthly prompt and model review against the planted-bug benchmark (`benchmark/v1/*` tags)
 
 ---
 
 ## 13. Metrics
 
-| Metric                                     | Source                                          | Target / use                             |
-| ------------------------------------------ | ----------------------------------------------- | ---------------------------------------- |
-| AI comment precision                       | 👍/👎 reactions on reviewer comments (`gh api`) | > 70%                                    |
-| Planted-bug catch rate                     | Benchmark PRs                                   | Re-run on every prompt or model change   |
-| Fixer success (CI green, finding resolved) | `ai-fix:` commits vs. `needs-human`             | Decides automation scope                 |
-| Time to first review, PR cycle time        | GitHub PR timestamps                            | Main business value                      |
-| Escaped defects                            | Sentry issues per release                       | Mustn't rise after auto-merge is enabled |
-| Cost per PR                                | Console usage per workspace, OTel               | Budget                                   |
-| MTTR for PRD bugs                          | Sentry first-seen → resolved-in-release         | Value of Workflow B                      |
+| Metric                                     | Source                                           | Target / use                             |
+| ------------------------------------------ | ------------------------------------------------ | ---------------------------------------- |
+| AI comment precision                       | 👍/👎 reactions on reviewer comments (`gh api`)  | > 70%                                    |
+| Planted-bug catch rate                     | Benchmark PRs                                    | Re-run on every prompt or model change   |
+| Fixer success (CI green, finding resolved) | `ai-fix:` commits vs. `needs-human`              | Decides automation scope                 |
+| Time to first review, PR cycle time        | GitHub PR timestamps                             | Main business value                      |
+| Escaped defects                            | Sentry issues per release                        | Mustn't rise after auto-merge is enabled |
+| Cost per PR                                | Job summary per run, Console usage per workspace | Budget                                   |
+| MTTR for PRD bugs                          | Sentry first-seen → resolved-in-release          | Value of Workflow B                      |
 
 ---
 
@@ -689,5 +684,10 @@ sweep" of Sentry and opens or updates issues. Check that routines are available 
 
 ## 15. Next step
 
-Start with **Phase 0 + Phase 1**. Ask Claude Code to scaffold `ci.yml`, `REVIEW.md`, the updated `CLAUDE.md`,
-`.claude/agents/reviewer.md`, `.claude/schemas/review-findings.json` and the review-only `ai-review.yml`.
+Phases 0 and 1 are done (see Status at the top). Next:
+
+1. **Phase 2, the fixer:** create the `ai-fixer` GitHub App, then add `.claude/agents/fixer.md`, the protect-paths hook,
+   and a `fix` job triggered by an `ai-fix` label. Until then, the fixer loop runs by hand in Claude Code: local review →
+   fix → re-review, at most 3 rounds.
+2. Turn CI review back on (`AI_AGENTS_ENABLED=true`) when you want CI confirmations again.
+3. Clear the follow-ups in issue #11 and the open Phase 1 items (`security-review.yml`, `/install-github-app`).

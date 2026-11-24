@@ -3,13 +3,29 @@ name: AI Review
 # Phase 1: comment-only. Claude reviews the PR and posts inline comments; the
 # workflow posts (and updates) one summary comment from Claude's structured
 # result, and the ai-review-gate job reports pass/fail. Nothing is pushed or merged.
+#
+# Opt-in: the review runs only on PRs labelled `ai-review` (review locally with
+# the reviewer agent first; add the label when you want the CI confirmation).
+# Adding the label starts a review; later pushes re-review while it stays on.
+# Without the label, or with the AI_AGENTS_ENABLED kill switch off, the review
+# is skipped and ai-review-gate passes. Removing the label opts out: the gate
+# passes again (and cancels a review that is still running).
+#
+# Adding or removing any OTHER label also runs this workflow. Those runs never
+# review; the gate repeats the commit's previous gate result (see the gate job).
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened, ready_for_review]
+    types: [opened, synchronize, reopened, ready_for_review, labeled, unlabeled]
 
 concurrency:
-  group: ai-review-${{ github.event.pull_request.number }}
+  # Runs for other labels get their own group, so they can't cancel a review
+  # that is in progress.
+  group: >-
+    ai-review-${{ github.event.pull_request.number }}${{
+    (github.event.action == 'labeled' || github.event.action == 'unlabeled')
+    && github.event.label.name != 'ai-review'
+    && format('-other-label-{0}', github.run_id) || '' }}
   cancel-in-progress: true
 
 # No token access by default; the review job grants itself what it needs.
@@ -17,12 +33,17 @@ permissions: {}
 
 jobs:
   review:
-    # Kill switch, skip drafts, skip forks and Dependabot (no access to secrets there).
+    # Kill switch, opt-in label, skip drafts, skip forks and Dependabot PRs
+    # (no access to secrets there). Label events only start a review when the
+    # `ai-review` label itself was added; removing a label never reviews.
     if: >-
       vars.AI_AGENTS_ENABLED == 'true' &&
+      contains(github.event.pull_request.labels.*.name, 'ai-review') &&
+      github.event.action != 'unlabeled' &&
+      (github.event.action != 'labeled' || github.event.label.name == 'ai-review') &&
       !github.event.pull_request.draft &&
       github.event.pull_request.head.repo.full_name == github.repository &&
-      github.actor != 'dependabot[bot]'
+      github.event.pull_request.user.login != 'dependabot[bot]'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     # No id-token: github_token is passed explicitly, so the action doesn't need
@@ -242,17 +263,50 @@ jobs:
   ai-review-gate:
     # always(): a failed or cancelled review must fail the gate, not skip it
     # (GitHub treats a skipped required check as passing). An intentionally
-    # skipped review (kill switch, draft, fork, Dependabot) passes.
+    # skipped review (kill switch, no ai-review label, draft, fork, Dependabot)
+    # passes.
+    #
+    # Adding or removing an unrelated label also runs this workflow with the
+    # review skipped. GitHub uses the newest ai-review-gate result for a
+    # commit, so passing here would overwrite an earlier failure. Those runs
+    # repeat the previous completed gate result for the same commit, and pass
+    # only if it passed; with no completed result at all they fail.
+    # Limit: that previous result can predate a review that is still running
+    # (e.g. the skipped-review pass from `opened`, before `ai-review` was
+    # added). The running review's gate replaces it when it finishes, so wait
+    # for the review before merging.
     needs: review
     if: always()
     runs-on: ubuntu-latest
+    permissions:
+      checks: read
     steps:
       - name: Fail on blocker/major findings
         env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.event.pull_request.head.sha }}
+          ACTION: ${{ github.event.action }}
+          LABEL: ${{ github.event.label.name }}
           RESULT: ${{ needs.review.result }}
           VERDICT: ${{ needs.review.outputs.verdict }}
           BLOCKING: ${{ needs.review.outputs.blocking }}
         run: |
+          set -euo pipefail
           echo "Review job: $RESULT · verdict: $VERDICT · blocking findings: $BLOCKING"
+
+          if { [ "$ACTION" = "labeled" ] || [ "$ACTION" = "unlabeled" ]; } && [ "$LABEL" != "ai-review" ]; then
+            previous=$(gh api "repos/$REPO/commits/$SHA/check-runs?check_name=ai-review-gate&per_page=100" \
+              --jq '[.check_runs[] | select(.status == "completed")] | sort_by(.completed_at) | last | .conclusion // "none"')
+            echo "Unrelated label '$LABEL' ($ACTION); previous gate result for ${SHA:0:7}: $previous"
+            case "$previous" in
+              success|neutral|skipped) exit 0 ;;
+              *)
+                echo "::error::No passing ai-review-gate result for ${SHA:0:7} yet ($previous)"
+                exit 1
+                ;;
+            esac
+          fi
+
           if [ "$RESULT" = "skipped" ]; then exit 0; fi
           test "$RESULT" = "success" && test "$BLOCKING" = "0"
