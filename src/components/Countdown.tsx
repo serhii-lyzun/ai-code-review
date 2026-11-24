@@ -7,11 +7,18 @@ type CountdownProps = Readonly<{
 
 /**
  * Counts down from `seconds` once per second and calls `onDone` once, when
- * it reaches zero. Changing `seconds` after mount doesn't restart the timer;
- * give the component a new `key` to restart it.
+ * it reaches zero. Fractional `seconds` round up; a negative or non-finite
+ * value starts at zero. Changing `seconds` after mount doesn't restart the
+ * timer; give the component a new `key` to restart it.
+ *
+ * It counts interval ticks, not wall-clock time, so it runs slow while the
+ * browser throttles timers (e.g. in a background tab). Don't use it to
+ * enforce a real deadline.
  */
 function Countdown({ seconds, onDone }: CountdownProps) {
-  const [remaining, setRemaining] = useState(() => Math.max(0, seconds))
+  const [remaining, setRemaining] = useState(() =>
+    Number.isFinite(seconds) ? Math.max(0, Math.ceil(seconds)) : 0,
+  )
 
   // Always call the latest onDone without restarting the timer when the
   // parent passes a new function (e.g. an inline arrow) on re-render.
@@ -31,8 +38,13 @@ function Countdown({ seconds, onDone }: CountdownProps) {
     return () => clearInterval(id)
   }, [finished])
 
+  // The ref guard keeps onDone to one call even when React re-runs effects
+  // on a finished timer (StrictMode in development, or replayed effects).
+  const firedRef = useRef(false)
   useEffect(() => {
-    if (finished) onDoneRef.current?.()
+    if (!finished || firedRef.current) return
+    firedRef.current = true
+    onDoneRef.current?.()
   }, [finished])
 
   return <span role="timer">{remaining}s</span>

@@ -1,3 +1,4 @@
+import { StrictMode } from 'react'
 import { act, render, screen } from '@testing-library/react'
 import Countdown from './Countdown.tsx'
 
@@ -40,6 +41,28 @@ describe('Countdown', () => {
     tick(3000)
     expect(first).toHaveBeenCalledTimes(1)
     expect(second).not.toHaveBeenCalled()
+  })
+
+  it('calls onDone once under StrictMode', () => {
+    const onDone = jest.fn()
+    render(
+      <StrictMode>
+        <Countdown seconds={0} onDone={onDone} />
+      </StrictMode>,
+    )
+    expect(onDone).toHaveBeenCalledTimes(1)
+  })
+
+  it('treats a non-finite start as zero', () => {
+    const onDone = jest.fn()
+    render(<Countdown seconds={Number.NaN} onDone={onDone} />)
+    expect(screen.getByRole('timer')).toHaveTextContent('0s')
+    expect(onDone).toHaveBeenCalledTimes(1)
+  })
+
+  it('rounds a fractional start up', () => {
+    render(<Countdown seconds={2.5} />)
+    expect(screen.getByRole('timer')).toHaveTextContent('3s')
   })
 
   it('treats a negative start as zero', () => {
