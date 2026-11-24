@@ -12,17 +12,23 @@ name: AI Fix
 #   fix  - no App secrets. Claude edits, then lint/build/tests run. Claude can
 #          run code (npm test), so nothing in this job is trusted. Its output is
 #          a patch file plus Claude's structured result, uploaded as an artifact.
-#   push - fresh runner, never runs npm or PR code. Applies the patch, checks it
-#          with a policy script copied BEFORE the patch is applied, then creates
-#          the App token, commits and pushes. CI re-checks the pushed commit.
+#   push - only when there is a patch. Fresh runner, never runs npm or PR code.
+#          Applies the patch, checks it with a policy script copied BEFORE the
+#          patch is applied, then creates the App token, commits and pushes.
+#          CI re-checks the pushed commit. The only job in the ai-fixer
+#          environment, which holds the App secrets.
+#   report - every outcome. Posts the PR comment and updates labels with the
+#          default GITHUB_TOKEN.
 
 on:
   pull_request:
     types: [labeled]
 
 concurrency:
-  # One fix round per PR at a time; never cancel a round halfway through.
-  group: ai-fix-${{ github.event.pull_request.number }}
+  # One fix round per PR at a time; never cancel a round halfway through. The
+  # label name is part of the key, so other label events (which skip every
+  # job) can't replace a queued fix round.
+  group: ai-fix-${{ github.event.pull_request.number }}-${{ github.event.label.name }}
   cancel-in-progress: false
 
 permissions: {}
@@ -227,21 +233,21 @@ jobs:
 
   push:
     needs: fix
-    if: always() && needs.fix.result != 'skipped'
+    if: >-
+      !cancelled() && needs.fix.result == 'success' &&
+      needs.fix.outputs.status == 'ok' && needs.fix.outputs.changed == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    # App secrets live in this environment. Add required reviewers to it if
-    # every fix round should need a human approval before the token exists.
+    # App secrets live in this environment. Required reviewers on it make each
+    # push wait for a human approval. Don't add a deployment-branch rule: on
+    # pull_request events the ref is refs/pull/N/merge, so it would block.
     environment: ai-fixer
     permissions:
       contents: read
     env:
-      STATUS: ${{ needs.fix.outputs.status }}
-      DONE: ${{ needs.fix.outputs.done }}
       ROUND: ${{ needs.fix.outputs.next }}
-      CHANGED: ${{ needs.fix.outputs.changed }}
-      FIX_RESULT: ${{ needs.fix.result }}
-      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    outputs:
+      sha: ${{ steps.push.outputs.sha }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -258,15 +264,11 @@ jobs:
           fi
 
       - uses: actions/download-artifact@v7
-        if: env.STATUS == 'ok'
-        continue-on-error: true
         with:
           name: ai-fix-result
           path: .ai-fix
 
       - name: Apply and check the patch
-        id: apply
-        if: env.FIX_RESULT == 'success' && env.STATUS == 'ok' && env.CHANGED == 'true'
         run: |
           set -euo pipefail
           git apply --index .ai-fix/fix.patch
@@ -281,7 +283,6 @@ jobs:
 
       - name: Commit and push
         id: push
-        if: steps.apply.outcome == 'success'
         env:
           TOKEN: ${{ steps.app.outputs.token }}
           SLUG: ${{ steps.app.outputs.app-slug }}
@@ -290,28 +291,60 @@ jobs:
           bot_id=$(GH_TOKEN="$TOKEN" gh api "/users/${SLUG}%5Bbot%5D" --jq .id)
           git config user.name "${SLUG}[bot]"
           git config user.email "${bot_id}+${SLUG}[bot]@users.noreply.github.com"
+          # The body is Claude's text. Strip anything that would stop CI or
+          # the AI review from re-checking this commit.
           {
-            echo "ai-fix: round $ROUND for PR #$PR"
-            echo
             jq -r '.summary' .ai-fix/result.json
             echo
             jq -r '.fixed[] | "- Fixed: \(.title) (\(.file)): \(.change)"' .ai-fix/result.json
             jq -r '.skipped[] | "- Skipped: \(.title): \(.reason)"' .ai-fix/result.json
-          } > "$RUNNER_TEMP/commit-message.txt"
+          } | sed -E 's/\[(skip ci|ci skip|no ci|skip actions|actions skip)\]//Ig; /^[[:space:]]*skip-checks[[:space:]]*:/Id' \
+            > "$RUNNER_TEMP/body.txt"
+          { echo "ai-fix: round $ROUND for PR #$PR"; echo; cat "$RUNNER_TEMP/body.txt"; } > "$RUNNER_TEMP/commit-message.txt"
           git commit -q -F "$RUNNER_TEMP/commit-message.txt"
           git push "https://x-access-token:${TOKEN}@github.com/${REPO}.git" "HEAD:refs/heads/${HEAD_REF}"
           echo "sha=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
 
-      - name: Report on the PR
-        if: always() && steps.app.outcome == 'success'
-        env:
-          GH_TOKEN: ${{ steps.app.outputs.token }}
-          PUSHED: ${{ steps.push.outputs.sha }}
-          APPLY: ${{ steps.apply.outcome }}
+  report:
+    needs: [fix, push]
+    if: ${{ !cancelled() && needs.fix.result != 'skipped' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      pull-requests: write
+      issues: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      STATUS: ${{ needs.fix.outputs.status }}
+      DONE: ${{ needs.fix.outputs.done }}
+      ROUND: ${{ needs.fix.outputs.next }}
+      CHANGED: ${{ needs.fix.outputs.changed }}
+      FIX_RESULT: ${{ needs.fix.result }}
+      PUSH_RESULT: ${{ needs.push.result }}
+      PUSHED: ${{ needs.push.outputs.sha }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      # First, so the label always comes off even if the comment fails.
+      - name: Remove the ai-fix label
+        run: gh pr edit "$PR" --repo "$REPO" --remove-label ai-fix >/dev/null || true
+
+      - uses: actions/download-artifact@v7
+        if: env.STATUS == 'ok'
+        continue-on-error: true
+        with:
+          name: ai-fix-result
+          path: .ai-fix
+
+      - name: Comment on the PR
         run: |
-          set -euo pipefail
+          set -uo pipefail
           result=.ai-fix/result.json
+          round="${ROUND:-?}"
           needs_human=false
+          # Claude's text, or a note when result.json is missing or malformed.
+          claude_text() {
+            jq -r "$1" "$result" 2>/dev/null || echo "_(no readable result from Claude)_"
+          }
           {
             if [ "$STATUS" = "limit" ]; then
               echo "## AI fix: round limit reached"
@@ -330,15 +363,15 @@ jobs:
               echo "## AI fix: nothing to fix"
               echo
               echo "The AI review of \`${SHA:0:7}\` has no blocker or major findings."
-            elif [ -n "$PUSHED" ]; then
-              echo "## AI fix: round $ROUND of $MAX_ROUNDS pushed as \`$PUSHED\`"
+            elif [ "$PUSH_RESULT" = "success" ] && [ -n "$PUSHED" ]; then
+              echo "## AI fix: round $round of $MAX_ROUNDS pushed as \`$PUSHED\`"
               echo
-              jq -r '.summary' "$result"
+              claude_text '.summary'
               echo
-              jq -r '.fixed[] | "- **Fixed:** \(.title) (`\(.file)`): \(.change)"' "$result"
-              jq -r '.skipped[] | "- **Skipped:** \(.title): \(.reason)"' "$result"
+              claude_text '.fixed[] | "- **Fixed:** \(.title) (`\(.file)`): \(.change)"'
+              claude_text '.skipped[] | "- **Skipped:** \(.title): \(.reason)"'
               echo
-              if [ "$ROUND" -ge "$MAX_ROUNDS" ]; then
+              if [ "${ROUND:-0}" -ge "$MAX_ROUNDS" ]; then
                 echo "That was the last allowed round. If the new review still has blocker or major findings, a human needs to take over."
                 needs_human=true
               else
@@ -347,14 +380,16 @@ jobs:
             elif [ "$FIX_RESULT" = "success" ] && [ "$CHANGED" = "false" ]; then
               echo "## AI fix: no changes made"
               echo
-              if [ -f "$result" ]; then
-                jq -r '.summary' "$result"
-                jq -r '.skipped[] | "- **Skipped:** \(.title): \(.reason)"' "$result"
-              fi
-            else
-              echo "## AI fix: round $ROUND failed, nothing was pushed"
+              claude_text '.summary'
+              claude_text '.skipped[] | "- **Skipped:** \(.title): \(.reason)"'
+            elif [ "$FIX_RESULT" = "success" ] && [ "$PUSH_RESULT" = "failure" ]; then
+              echo "## AI fix: round $round passed its checks but wasn't pushed"
               echo
-              echo "Claude didn't finish, or the fix didn't pass the diff policy or lint/build/tests (fix job: $FIX_RESULT, patch check: ${APPLY:-not run}). See the [run log]($RUN_URL)."
+              echo "The patch passed the fix job's checks, but the push job failed: the patch was rejected by the policy re-check, the App token couldn't be created (is the ai-fixer App installed on this repo?), or the branch moved and the push wasn't a fast-forward. See the [run log]($RUN_URL)."
+            else
+              echo "## AI fix: round $round failed, nothing was pushed"
+              echo
+              echo "Claude didn't finish, or the fix didn't pass the diff policy or lint/build/tests (fix job: $FIX_RESULT). See the [run log]($RUN_URL)."
             fi
             echo
             echo "<sub>[AI Fix run]($RUN_URL)</sub>"
@@ -363,4 +398,3 @@ jobs:
           if [ "$needs_human" = "true" ]; then
             gh pr edit "$PR" --repo "$REPO" --add-label needs-human >/dev/null
           fi
-          gh pr edit "$PR" --repo "$REPO" --remove-label ai-fix >/dev/null || true

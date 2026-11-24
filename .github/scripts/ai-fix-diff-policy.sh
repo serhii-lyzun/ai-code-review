@@ -3,14 +3,19 @@
 # Run after `git add -A`. Exits 1 with a list of violations, 0 when clean.
 #
 # Rules:
-#   1. Only files under src/ may change, and not src/test/ (Jest setup and stubs).
+#   1. Only files under src/ may change, and not src/test/ (Jest setup and stubs)
+#      or dotfiles such as .gitattributes (they change how git and GitHub show diffs).
+#   1b. No binary files, symlinks or file-type changes (they hide content from 2).
 #   2. No added lines that silence tooling or skip tests.
 #   3. No test files deleted (renames count as delete + add).
 #   4. No test file loses `expect(` assertions.
 set -euo pipefail
 
-# Unquoted non-ASCII paths, and renames reported as delete + add.
-diff_cached() { git -c core.quotePath=false diff --cached --no-renames "$@"; }
+# Unquoted non-ASCII paths; renames reported as delete + add; always a text
+# diff, never textconv or external diff drivers.
+diff_cached() {
+  git -c core.quotePath=false diff --cached --no-renames --text --no-textconv --no-ext-diff "$@"
+}
 
 violations=()
 
@@ -23,10 +28,24 @@ fi
 while IFS= read -r file; do
   case "$file" in
     src/test/*) violations+=("changed Jest setup or stubs: $file") ;;
+    src/.* | src/*/.*) violations+=("changed a dotfile: $file") ;;
     src/*) ;;
     *) violations+=("changed a file outside src/: $file") ;;
   esac
 done <<< "$changed"
+
+# Binary files show as "-<TAB>-" in numstat; symlinks and type changes as
+# mode 120000 or status T.
+while IFS=$'\t' read -r adds dels file; do
+  if [ "$adds" = "-" ] && [ "$dels" = "-" ]; then violations+=("binary file: $file"); fi
+done < <(git -c core.quotePath=false diff --cached --no-renames --numstat)
+if git diff --cached --no-renames --summary | grep -q 'mode 120000'; then
+  violations+=("added or changed a symlink")
+fi
+type_changed=$(diff_cached --name-only --diff-filter=T || true)
+if [ -n "$type_changed" ]; then
+  while IFS= read -r file; do violations+=("changed the file type of $file"); done <<< "$type_changed"
+fi
 
 # Added lines, without the "+++ b/file" headers.
 added=$(diff_cached --unified=0 --no-color | grep -E '^\+' | grep -vE '^\+\+\+ (b/|/dev/null)' || true)
