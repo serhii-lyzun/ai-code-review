@@ -15,7 +15,8 @@
 | Phase 2   | **Done and tested end to end** on #17 (2026-11-24). A planted off-by-one got a blocker and a missing test got a major, so the gate failed. `ai-fix` then pushed `ai-fix: round 1` as `ai-code-review-fixer[bot]` with the fix and three tests, and the re-review passed. Read-only `@claude` answered correctly without changing code. Not yet tested: the round cap (`needs-human`), and a re-review triggered by the bot itself after #18. |
 | Labels    | Opt-in triggers: `ai-review` (CI review), `ai-fix` (one fix round), `security-review` (security pass); `@claude` mentions for interactive help. Everything also requires `AI_AGENTS_ENABLED=true` (currently on).                                                                                                                                                                                                                            |
 | Benchmark | Local reviewer agent: **5/5** planted bugs caught, **0** false positives on the clean control PR. The one CI run (#7, XSS) matched the local result exactly. The planted-bug versions are tagged `benchmark/v1/<name>`; the answer key is kept outside the repo.                                                                                                                                                                             |
-| Next      | Phase 3: risk tiers, `merge-gate`, auto-merge for `risk:low`. See §15.                                                                                                                                                                                                                                                                                                                                                                       |
+| Phase 3   | **Built** (#20): risk tiers (`policy/risk.json`, `scripts/risk-tier.mjs`), `merge-gate` with `risk:*` labels and an approval rule for medium and high, and auto-merge for `risk:low` behind `AUTO_MERGE_ENABLED` (off). Not yet a required check.                                                                                                                                                                                            |
+| Next      | Phase 3 rollout: watch `merge-gate`, make it required, then enable auto-merge. See §15.                                                                                                                                                                                                                                                                                                                                                      |
 
 ---
 
@@ -210,7 +211,7 @@ CODE_CONVENTIONS.md             # (exists)
   skills/review-checklist/SKILL.md
   skills/repro-with-failing-test/SKILL.md
   schemas/review-findings.json  # JSON schema for structured review output
-policy/risk.yml                 # risk tier rules
+policy/risk.json                 # risk tier rules
 scripts/risk-tier.mjs           # deterministic tier calculation
 .github/
   CODEOWNERS
@@ -475,7 +476,7 @@ jobs:
       - name: Compute risk tier
         id: risk
         run: |
-          tier=$(node scripts/risk-tier.mjs "$PR")   # reads policy/risk.yml, prints low|medium|high
+          tier=$(node scripts/risk-tier.mjs "$PR")   # reads policy/risk.json, prints low|medium|high
           gh pr edit "$PR" --remove-label risk:low,risk:medium,risk:high --add-label "risk:$tier" || true
           echo "tier=$tier" >> "$GITHUB_OUTPUT"
       - name: Check human approvals
@@ -496,14 +497,14 @@ default the action ignores comments from bots, so the reviewer can't trigger it 
 
 ### 6.4 Dependabot: a good first auto-merge candidate
 
-Dependabot PRs for patch and minor versions are tagged `risk:low` by `policy/risk.yml`. Claude reviews the changelog and
+Dependabot PRs for patch and minor versions are tagged `risk:low` by `policy/risk.json`. Claude reviews the changelog and
 diff, and auto-merge lands them in DEV when CI is green. Major versions are `risk:medium`.
 
 ---
 
 ## 7. Merge and promotion policy
 
-### Risk tiers (`policy/risk.yml`, evaluated by a script, not by the LLM)
+### Risk tiers (`policy/risk.json`, evaluated by `scripts/risk-tier.mjs`, not by the LLM)
 
 | Tier       | Rule                                                                                          | Gate                                                                 |
 | ---------- | --------------------------------------------------------------------------------------------- | -------------------------------------------------------------------- |
@@ -680,9 +681,19 @@ sweep" of Sentry and opens or updates issues. Check that routines are available 
 
 ### Phase 3: Auto-merge to DEV · ~1 day
 
-- [ ] `policy/risk.yml` + `scripts/risk-tier.mjs` + `merge-gate.yml` (make `merge-gate` required)
-- [ ] `automerge` job for `risk:low`, starting with Dependabot and docs/test-only PRs
+- [x] `policy/risk.json` (JSON rather than YAML, so Node needs no parser dependency) + `scripts/risk-tier.mjs`, with
+      `node:test` tests (`npm run test:scripts`, run in CI). It checks high first, then low, then defaults to medium. A
+      rename counts both paths, so a file can't move out of a protected path unnoticed.
+- [x] `merge-gate.yml`: runs the base-branch copy of the classifier, sets a `risk:*` label, and requires one human
+      approval for medium and high. A `needs-human` label always fails it. It re-runs on every push, label and review.
+- [x] Auto-merge for `risk:low` inside `merge-gate.yml`, behind `AUTO_MERGE_ENABLED` (starts `false`). It turns
+      auto-merge off again when a push raises the tier. Dependabot update types come from `dependabot/fetch-metadata`,
+      which verifies that the commits are Dependabot's.
+- [ ] Make `merge-gate` a required check once it has run correctly on a few PRs
+- [ ] Turn on `AUTO_MERGE_ENABLED`, starting with Dependabot and docs/test-only PRs
 - [ ] Run 2–4 weeks, watch metrics, then consider widening the tiers
+- Note: auto-merge is enabled with `GITHUB_TOKEN`, so the resulting push to `main` doesn't start `push` workflows (CI on
+  `main`). The PR's checks already ran on the same changes. Use an App token if post-merge runs on `main` are needed.
 
 ### Phase 4: Environments · ~2 days
 
@@ -739,9 +750,10 @@ sweep" of Sentry and opens or updates issues. Check that routines are available 
 
 ## 15. Next step
 
-Phases 0, 1 and 2 are done (see Status at the top). Next:
+Phases 0, 1 and 2 are done, and Phase 3 is built (see Status at the top). Next:
 
-1. **Phase 3:** risk tiers (`policy/risk.yml`), `merge-gate`, and auto-merge for `risk:low` PRs.
+1. **Phase 3 rollout:** watch `merge-gate` on a few real PRs (docs-only → `risk:low`, code → `risk:medium`, Dependabot
+   npm patch → `risk:low`), then add `merge-gate` to the ruleset's required checks, then set `AUTO_MERGE_ENABLED=true`.
 2. Phase 2 leftovers: test the round cap and `needs-human` on a PR the fixer can't solve. The next `ai-fix` round will
    also confirm a bot-triggered re-review after #18.
 3. Follow-ups in issues #11 and #15, and the `review-checklist` skill.
