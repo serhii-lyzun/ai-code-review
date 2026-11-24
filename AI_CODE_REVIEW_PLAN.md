@@ -626,8 +626,12 @@ sweep" of Sentry and opens or updates issues. Check that routines are available 
 - [x] `.github/scripts/ai-fix-diff-policy.sh`: only `src/` may change, no silencing comments, no deleted test files, no
       fewer `expect(` assertions. It runs on whatever Claude did, before commit.
 - [x] `ai-fix.yml`, triggered by a human adding the `ai-fix` label, using the findings artifact of the AI review of the
-      PR's current commit. Claude never holds a write token: the App token is created after Claude finishes, and
-      checkout doesn't persist credentials. The workflow, not Claude, commits and pushes.
+      PR's current commit. It has **two jobs**. `fix` has no App secrets and produces a patch. `push` runs on a fresh
+      runner, never runs npm or PR code, re-checks the patch with a policy copy taken before applying it, and only then
+      creates the App token, commits and pushes. Creating the token "after Claude" in the same job isn't enough: code
+      Claude runs through `npm test` could leave git hooks, git config or a background process behind to steal it.
+- [x] App secrets in the `ai-fixer` **environment**, not at repo level. Add required reviewers there to approve each
+      round by hand.
 - [x] Labels `ai-fix` and `needs-human`, variable `AI_MAX_FIX_ROUNDS=3`
 - [ ] Verify end to end on a PR with a planted bug: review → `ai-fix` → new review passes
 - [ ] Verify the round cap and `needs-human` escalation on a PR the fixer can't solve

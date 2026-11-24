@@ -10,7 +10,8 @@
       "Edit(./CODE_CONVENTIONS.md)",
       "Edit(./AI_CODE_REVIEW_PLAN.md)",
       "Edit(./package.json)",
-      "Edit(./package-lock.json)"
+      "Edit(./package-lock.json)",
+      "Edit(./src/test/**)"
     ]
   },
   "hooks": {

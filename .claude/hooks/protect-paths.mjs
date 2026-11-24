@@ -18,6 +18,7 @@ const PROTECTED = [
   /^\.prettier(rc|ignore)(\..+)?$/,
   /^(jest|vite)\.config\.[cm]?[jt]s$/,
   /^\.nvmrc$/,
+  /^src\/test\//, // Jest setup and stubs: editing them can disable every test
 ]
 
 const SILENCERS = [
@@ -25,7 +26,7 @@ const SILENCERS = [
   /@ts-expect-error/,
   /@ts-nocheck/,
   /(oxlint|eslint)-disable/,
-  /\b(it|test|describe)\.(only|skip)\(/,
+  /\b(it|test|describe)(\.concurrent)?\.(only|skip|todo)\(/,
   /\bx(it|test|describe)\(/,
 ]
 
@@ -56,10 +57,11 @@ if (PROTECTED.some((pattern) => pattern.test(rel))) {
 }
 
 // New text the tool would write: Write uses `content`, Edit `new_string`,
-// MultiEdit a list of `edits`.
+// NotebookEdit `new_source`, MultiEdit a list of `edits`.
 const added = [
   tool.content,
   tool.new_string,
+  tool.new_source,
   ...(Array.isArray(tool.edits)
     ? tool.edits.map((edit) => edit.new_string)
     : []),
