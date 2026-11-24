@@ -2,6 +2,9 @@
   "permissions": {
     "deny": [
       "Read(./.env*)",
+      "Read(~/.ssh/**)",
+      "Read(//home/runner/work/_temp/**)",
+      "Read(//proc/**)",
       "Edit(./.github/**)",
       "Edit(./.claude/**)",
       "Edit(./.husky/**)",

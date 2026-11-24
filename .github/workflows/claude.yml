@@ -1,15 +1,20 @@
 name: Claude
 
-# Interactive Claude: mention @claude in an issue, a PR comment, a PR review or
-# a review comment to ask a question or request a change. It runs only when
-# mentioned, only for the repo owner and collaborators, and only while the
-# AI_AGENTS_ENABLED kill switch is on.
+# Interactive Claude, READ-ONLY: mention @claude in an issue, a PR comment, a
+# PR review or a review comment to ask a question, get code explained, or get a
+# review of a specific concern. Claude answers in a comment; it can't edit,
+# commit or push. For code changes, add the `ai-fix` label instead: that path
+# has the diff policy, hook and separate push job.
 #
-# Claude acts as the Claude GitHub App (installed with /install-github-app).
-# It loads the same CI-only guardrails as the fixer (.claude/ci-fixer-settings.json):
-# it can't edit .github/, .claude/, CLAUDE.md, REVIEW.md, package files or
-# src/test/, and can't add @ts-ignore, lint-disable or .skip/.only. Anything it
-# pushes goes through the normal PR checks and the main ruleset.
+# Who can trigger it: the mention must come from the owner, a member or a
+# collaborator, AND the issue or PR must have been opened by one of them, so
+# Claude isn't steered by an outsider's issue or PR text. Comments from
+# outsiders in the same thread are still visible to Claude, so only mention it
+# on threads whose content you trust. It runs as the Claude GitHub App
+# (installed with /install-github-app) and only while AI_AGENTS_ENABLED is on.
+#
+# One run per issue or PR at a time. GitHub keeps at most one pending run per
+# concurrency group, so a third quick mention replaces the second one.
 
 on:
   issue_comment:
@@ -19,51 +24,60 @@ on:
   pull_request_review:
     types: [submitted]
   issues:
-    types: [opened, assigned]
+    types: [opened]
 
 permissions: {}
 
 jobs:
   claude:
-    # The mention, from someone trusted. author_association is the commenter's
-    # relationship to the repo; OWNER, MEMBER and COLLABORATOR have been
-    # granted access, so outsiders (including on this public repo) can't start
-    # paid runs or steer Claude.
     if: >-
       vars.AI_AGENTS_ENABLED == 'true' && (
         (github.event_name == 'issue_comment' &&
           contains(github.event.comment.body, '@claude') &&
-          contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association)) ||
+          contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association) &&
+          contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.issue.author_association)) ||
         (github.event_name == 'pull_request_review_comment' &&
           contains(github.event.comment.body, '@claude') &&
-          contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association)) ||
+          contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association) &&
+          contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.pull_request.author_association)) ||
         (github.event_name == 'pull_request_review' &&
           contains(github.event.review.body, '@claude') &&
-          contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.review.author_association)) ||
+          contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.review.author_association) &&
+          contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.pull_request.author_association)) ||
         (github.event_name == 'issues' &&
           (contains(github.event.issue.body, '@claude') || contains(github.event.issue.title, '@claude')) &&
           contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.issue.author_association))
       )
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 20
     concurrency:
       group: claude-${{ github.event.issue.number || github.event.pull_request.number }}
       cancel-in-progress: false
+    # Read-only GITHUB_TOKEN. The action exchanges the OIDC token for a Claude
+    # GitHub App token, which it uses to post Claude's reply.
     permissions:
-      contents: write
-      pull-requests: write
-      issues: write
-      id-token: write # exchanged for a Claude GitHub App token
-      actions: read # lets Claude read CI results on PRs
+      contents: read
+      pull-requests: read
+      issues: read
+      actions: read
+      id-token: write
     steps:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 1
+          persist-credentials: false
 
       - uses: anthropics/claude-code-action@v1
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           settings: .claude/ci-fixer-settings.json
+          # Lets Claude read CI results on PRs.
+          additional_permissions: |
+            actions: read
+          # Read-only: no file edits, no git writes. The disallow list wins over
+          # any tool the action allows by default.
           claude_args: >-
             --model claude-sonnet-5-5
             --max-turns 30
+            --allowedTools "Read,Grep,Glob,Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh issue view:*)"
+            --disallowedTools "Edit,Write,MultiEdit,NotebookEdit,Bash(git add:*),Bash(git commit:*),Bash(git push:*),Bash(git rm:*),Bash(git mv:*),Bash(git checkout:*),Bash(git reset:*),Bash(git branch:*),Bash(gh pr merge:*),Bash(gh pr edit:*),Bash(gh api:*)"

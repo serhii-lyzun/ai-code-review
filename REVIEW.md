@@ -31,7 +31,8 @@ sure something is a bug, say what would confirm it instead of asserting it.
 4. **Tests.** New or changed behavior has a test next to the code (`*.test.tsx`). Tests assert behavior with Testing
    Library queries, not implementation details. No test was deleted or weakened without a reason in the PR description.
    How severe a test gap is depends on what it leaves unprotected:
-   - **major:** a bug fix without a test that fails without the fix, or new behavior with no test at all.
+   - **major:** a bug fix without a test that fails without the fix, new behavior with no test at all, or changed
+     behavior whose existing tests weren't updated to cover the change.
    - **minor:** tested behavior with a coverage gap, such as an untested edge case, branch or error path. Name the
      missing case instead of asking for "more tests".
 5. **Types.** No `any` without a reason, no `as` casts that hide a real mismatch, no `@ts-ignore` / `@ts-expect-error`

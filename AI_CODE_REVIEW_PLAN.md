@@ -11,7 +11,7 @@
 | Area      | State                                                                                                                                                                                                                                                            |
 | --------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Phase 0   | **Done**: CI, Dependabot, CODEOWNERS, `REVIEW.md`, ruleset on `main` (with a CodeQL rule), secret scanning + push protection, CodeQL. The repo is **public**, because rulesets aren't available for private repos on the free plan.                              |
-| Phase 1   | **Done**: reviewer subagent, findings schema, opt-in `ai-review.yml`, planted-bug benchmark, opt-in `security-review.yml`, `@claude` via `claude.yml`, the split test-severity rule in `REVIEW.md`. Not done: the `review-checklist` skill.                      |
+| Phase 1   | **Done**: reviewer subagent, findings schema, opt-in `ai-review.yml`, planted-bug benchmark, opt-in `security-review.yml`, read-only `@claude` via `claude.yml`, the split test-severity rule in `REVIEW.md`. Not done: the `review-checklist` skill.            |
 | Phase 2   | **Built, not yet tested end to end**: `ai-fix.yml` (labels `ai-fix` / `needs-human`), the `ai-fixer` GitHub App, CI-only hook and deny rules, diff policy.                                                                                                       |
 | Labels    | Opt-in triggers: `ai-review` (CI review), `ai-fix` (one fix round), `security-review` (security pass); `@claude` mentions for interactive help. Everything also requires `AI_AGENTS_ENABLED=true` (currently on).                                                |
 | Benchmark | Local reviewer agent: **5/5** planted bugs caught, **0** false positives on the clean control PR. The one CI run (#7, XSS) matched the local result exactly. The planted-bug versions are tagged `benchmark/v1/<name>`; the answer key is kept outside the repo. |
@@ -330,7 +330,8 @@ read-only `SENTRY_AUTH_TOKEN`.
 ```
 PR opened/synchronized
  ├─ ci.yml: npm ci → lint → format:check → build → test           (required: ci)
- ├─ CodeQL + secret scanning + security-review.yml                 (required: CodeQL)
+ ├─ CodeQL + secret scanning                                       (required: CodeQL)
+ ├─ security-review.yml (only with the `security-review` label; not required)
  └─ ai-review.yml (only with the `ai-review` label and AI_AGENTS_ENABLED=true; otherwise the gate passes)
      ├─ review:   reviewer subagent → inline comments + structured findings.json
      ├─ ai-review-gate: fails if any blocker/major                 (required: ai-review-gate)
@@ -633,8 +634,9 @@ sweep" of Sentry and opens or updates issues. Check that routines are available 
 
 - [x] Anthropic Console: CI workspace, API key, spend limit → `ANTHROPIC_API_KEY` secret
 - [x] `/install-github-app` in Claude Code: it installed the Claude GitHub App but added no workflow, so
-      `.github/workflows/claude.yml` was added by hand. `@claude` works only for the owner and collaborators, and it
-      loads the same CI-only guardrails as the fixer.
+      `.github/workflows/claude.yml` was added by hand. `@claude` is **read-only** (answers, explanations, reviews) and
+      runs only when the mention and the issue or PR come from trusted accounts. An interactive agent that can push needs
+      the same split design as the fixer, so code changes go through `ai-fix` instead.
 - [x] `.claude/agents/reviewer.md`, `.claude/schemas/review-findings.json`
 - [ ] `review-checklist` skill
 - [x] `ai-review.yml` with only the `review` + `ai-review-gate` jobs, opt-in via the `ai-review` label
