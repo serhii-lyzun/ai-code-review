@@ -39,7 +39,9 @@ done <<< "$changed"
 while IFS=$'\t' read -r adds dels file; do
   if [ "$adds" = "-" ] && [ "$dels" = "-" ]; then violations+=("binary file: $file"); fi
 done < <(git -c core.quotePath=false diff --cached --no-renames --numstat)
-if git diff --cached --no-renames --summary | grep -q 'mode 120000'; then
+# Captured first: `git ... | grep -q` under pipefail can fail with SIGPIPE.
+summary=$(git diff --cached --no-renames --summary)
+if grep -q 'mode 120000' <<< "$summary"; then
   violations+=("added or changed a symlink")
 fi
 type_changed=$(diff_cached --name-only --diff-filter=T || true)

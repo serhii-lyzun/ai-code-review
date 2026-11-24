@@ -298,8 +298,13 @@ jobs:
             echo
             jq -r '.fixed[] | "- Fixed: \(.title) (\(.file)): \(.change)"' .ai-fix/result.json
             jq -r '.skipped[] | "- Skipped: \(.title): \(.reason)"' .ai-fix/result.json
-          } | sed -E 's/\[(skip ci|ci skip|no ci|skip actions|actions skip)\]//Ig; /^[[:space:]]*skip-checks[[:space:]]*:/Id' \
+          } | sed -E ':a; s/\[(skip ci|ci skip|no ci|skip actions|actions skip)\]//I; ta; /^[[:space:]]*skip-checks[[:space:]]*:/Id' \
             > "$RUNNER_TEMP/body.txt"
+          # Belt and braces: refuse to push if any skip token survived.
+          if grep -qiE '\[(skip ci|ci skip|no ci|skip actions|actions skip)\]|^[[:space:]]*skip-checks[[:space:]]*:' "$RUNNER_TEMP/body.txt"; then
+            echo "::error::Commit message still contains a CI-skip token"
+            exit 1
+          fi
           { echo "ai-fix: round $ROUND for PR #$PR"; echo; cat "$RUNNER_TEMP/body.txt"; } > "$RUNNER_TEMP/commit-message.txt"
           git commit -q -F "$RUNNER_TEMP/commit-message.txt"
           git push "https://x-access-token:${TOKEN}@github.com/${REPO}.git" "HEAD:refs/heads/${HEAD_REF}"
@@ -394,7 +399,8 @@ jobs:
             echo
             echo "<sub>[AI Fix run]($RUN_URL)</sub>"
           } > "$RUNNER_TEMP/comment.md"
-          gh pr comment "$PR" --repo "$REPO" --body-file "$RUNNER_TEMP/comment.md"
+          gh pr comment "$PR" --repo "$REPO" --body-file "$RUNNER_TEMP/comment.md" || exit 1
           if [ "$needs_human" = "true" ]; then
-            gh pr edit "$PR" --repo "$REPO" --add-label needs-human >/dev/null
+            gh pr edit "$PR" --repo "$REPO" --add-label needs-human >/dev/null || exit 1
           fi
+          exit 0
