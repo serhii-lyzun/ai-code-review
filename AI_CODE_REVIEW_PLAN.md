@@ -15,8 +15,8 @@
 | Phase 2   | **Done and tested end to end** on #17 (2026-11-24). A planted off-by-one got a blocker and a missing test got a major, so the gate failed. `ai-fix` then pushed `ai-fix: round 1` as `ai-code-review-fixer[bot]` with the fix and three tests, and the re-review passed. Read-only `@claude` answered correctly without changing code. Not yet tested: the round cap (`needs-human`), and a re-review triggered by the bot itself after #18. |
 | Labels    | Opt-in triggers: `ai-review` (CI review), `ai-fix` (one fix round), `security-review` (security pass); `@claude` mentions for interactive help. Everything also requires `AI_AGENTS_ENABLED=true` (currently on).                                                                                                                                                                                                                            |
 | Benchmark | Local reviewer agent: **5/5** planted bugs caught, **0** false positives on the clean control PR. The one CI run (#7, XSS) matched the local result exactly. The planted-bug versions are tagged `benchmark/v1/<name>`; the answer key is kept outside the repo.                                                                                                                                                                             |
-| Phase 3   | **Built** (#20): risk tiers (`policy/risk.json`, `scripts/risk-tier.mjs`), `merge-gate` with `risk:*` labels and an approval rule for medium and high, and auto-merge for `risk:low` behind `AUTO_MERGE_ENABLED` (off). Not yet a required check.                                                                                                                                                                                            |
-| Next      | Phase 3 rollout: watch `merge-gate`, make it required, then enable auto-merge. See §15.                                                                                                                                                                                                                                                                                                                                                      |
+| Phase 3   | **Live** (#20, 2026-11-24): risk tiers (`policy/risk.json`, `scripts/risk-tier.mjs`) and `merge-gate`. `merge-gate` is a required check and owns the approval rule (low: none; medium/high: a collaborator's approval). Auto-merge is on for `risk:low` (`AUTO_MERGE_ENABLED=true`). Checked on a high PR (#20) and a low one (#21, merged without `--admin`). Not yet seen: a medium PR, and a Dependabot PR with auto-merge on.            |
+| Next      | Watch Phase 3 for 2–4 weeks; test the Phase 2 round cap; then Phase 4. See §15.                                                                                                                                                                                                                                                                                                                                                              |
 
 ---
 
@@ -124,20 +124,20 @@
 
 ### 4.1 Ruleset on `main` (Settings → Rules → Rulesets)
 
-| Rule                                                | Value                                                                              |
-| --------------------------------------------------- | ---------------------------------------------------------------------------------- |
-| Restrict deletions, block force pushes              | On                                                                                 |
-| Require linear history                              | On (squash merges)                                                                 |
-| Require a pull request before merging               | On                                                                                 |
-| Required approvals                                  | `0`: the human-approval rule lives in `merge-gate` so it can vary by risk tier     |
-| Require review from Code Owners                     | **On**: high-risk paths always need a human code owner                             |
-| Dismiss stale approvals when new commits are pushed | **On**: an approval doesn't survive a later fixer push                             |
-| Require approval of the most recent reviewable push | **On**                                                                             |
-| Require conversation resolution                     | On                                                                                 |
-| Allowed merge methods                               | Squash only                                                                        |
-| Required status checks                              | `ci`, `ai-review-gate` (both pinned to the GitHub Actions app); later `merge-gate` |
-| Code scanning                                       | CodeQL results must have no high-or-higher security alerts                         |
-| Bypass list                                         | Repo admins, **for pull requests only**: direct pushes stay blocked for everyone   |
+| Rule                                                | Value                                                                                                                                                                                                              |
+| --------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Restrict deletions, block force pushes              | On                                                                                                                                                                                                                 |
+| Require linear history                              | On (squash merges)                                                                                                                                                                                                 |
+| Require a pull request before merging               | On                                                                                                                                                                                                                 |
+| Required approvals                                  | `0`: the human-approval rule lives in `merge-gate` so it can vary by risk tier                                                                                                                                     |
+| Require review from Code Owners                     | **On**: high-risk paths always need a human code owner                                                                                                                                                             |
+| Dismiss stale approvals when new commits are pushed | **On**: an approval doesn't survive a later fixer push                                                                                                                                                             |
+| Require approval of the most recent reviewable push | **Off** (turned off 2026-11-24). On a solo repo it blocks every PR, even docs, and makes auto-merge impossible. `merge-gate` owns approvals, and dismissing stale approvals still covers a push after an approval. |
+| Require conversation resolution                     | On                                                                                                                                                                                                                 |
+| Allowed merge methods                               | Squash only                                                                                                                                                                                                        |
+| Required status checks                              | `ci`, `ai-review-gate`, `merge-gate` (all pinned to the GitHub Actions app)                                                                                                                                        |
+| Code scanning                                       | CodeQL results must have no high-or-higher security alerts                                                                                                                                                         |
+| Bypass list                                         | Repo admins, **for pull requests only**: direct pushes stay blocked for everyone                                                                                                                                   |
 
 **As implemented here:** ruleset `main`, created through the REST API. A solo maintainer can't approve their own PR, so
 CODEOWNERS-protected PRs are merged with `gh pr merge <n> --squash --admin`. With a team, remove the bypass and let a
@@ -592,16 +592,19 @@ sweep" of Sentry and opens or updates issues. Check that routines are available 
 
 ## 10. Guardrails and GitHub gotchas
 
-- [ ] **`GITHUB_TOKEN` pushes and labels don't trigger workflows.** Use the `ai-fixer` App token for anything that must
-      re-trigger CI.
-- [ ] **Never use `pull_request_target` to check out PR code.** Fork PRs run on `pull_request` with no secrets, so the AI
-      review is skipped for forks (or run it after a maintainer adds a `safe-to-review` label).
-- [ ] The `ai-fixer` App is **not** in the ruleset bypass list and is never a code owner.
-- [ ] "Dismiss stale approvals" and "require approval of most recent push" are on, so a fixer push after a human approval
-      needs re-approval.
-- [ ] Hooks + `permissions.deny` block agents from editing `.github/`, `.claude/`, `CLAUDE.md`, `REVIEW.md`.
-- [ ] Every Claude step has `--max-turns` and a job `timeout-minutes`. Every workflow has a concurrency group per PR.
-- [ ] Console workspace for CI with a monthly **spend limit**. Separate API key per workspace.
+- [x] **`GITHUB_TOKEN` pushes and labels don't trigger workflows.** The fixer pushes with the `ai-fixer` App token, so
+      CI and the re-review run on its commits (seen on #17).
+- [x] **Never use `pull_request_target` to check out PR code.** No workflow uses it. Fork PRs run on `pull_request` with
+      no secrets, so every AI workflow skips them.
+- [x] The `ai-fixer` App is **not** in the ruleset bypass list (only the admin role is, for PRs) and is never a code
+      owner.
+- [x] "Dismiss stale approvals" is on, so a fixer push after a human approval needs re-approval in `merge-gate`.
+      "Require approval of the most recent push" is **off**: on a solo repo it blocks every PR (see §4.1).
+- [x] The CI fixer's hook and `permissions.deny` block edits to `.github/`, `.claude/`, `CLAUDE.md`, `REVIEW.md`, package
+      files and `src/test/`. `@claude` is read-only with no git, and the diff policy is the final check on fixes.
+- [x] Every Claude step has `--max-turns` (security review: the action's `claudecode-timeout` instead, as it has no turn
+      limit) and every job has `timeout-minutes`. Every workflow has a concurrency group per PR or issue.
+- [x] Console workspace for CI with a monthly **spend limit**. Separate API key per workspace.
 - [x] Kill switch: set `AI_AGENTS_ENABLED=false` and all agent jobs skip.
 - [x] Opt-in label `ai-review`, so paid CI reviews run only when asked for.
 - [x] A required check that is skipped counts as passing, so a review that _fails_ must fail the gate (`if: always()`),
@@ -643,7 +646,8 @@ sweep" of Sentry and opens or updates issues. Check that routines are available 
       runs only when the mention and the issue or PR come from trusted accounts. An interactive agent that can push needs
       the same split design as the fixer, so code changes go through `ai-fix` instead.
 - [x] `.claude/agents/reviewer.md`, `.claude/schemas/review-findings.json`
-- [ ] `review-checklist` skill
+- [x] ~~`review-checklist` skill~~ **Dropped:** `REVIEW.md` is the checklist, and the reviewer agent loads it, locally and
+      in CI. A skill would be a second copy to keep in sync.
 - [x] `ai-review.yml` with only the `review` + `ai-review-gate` jobs, opt-in via the `ai-review` label
 - [x] `security-review.yml` with `anthropics/claude-code-security-review`, **opt-in** via the `security-review` label
       and pinned to a commit (the action has no release tags). It isn't a required check. The action isn't hardened
@@ -676,8 +680,11 @@ sweep" of Sentry and opens or updates issues. Check that routines are available 
 - [x] Labels `ai-fix` and `needs-human`, variable `AI_MAX_FIX_ROUNDS=3`
 - [x] Verify end to end on a PR with a planted bug: review → `ai-fix` → new review passes (#17). It needed two fixes,
       both in §6.1's gotchas: install the App on the repo, and list the fixer bot in `allowed_bots` (#18).
-- [ ] Verify the round cap and `needs-human` escalation on a PR the fixer can't solve
-- [ ] Later: trigger automatically on blocker/major findings instead of the label
+- [ ] Verify the round cap and `needs-human` escalation on a PR the fixer can't solve. **Needs a test:** about 3 paid fix
+      rounds plus reviews on a PR whose finding needs a protected file changed. It also confirms the bot-triggered
+      re-review after #18.
+- [ ] Later (optional): trigger automatically on blocker/major findings instead of the label. Do it only after the round
+      cap is verified and the fixer has a track record.
 
 ### Phase 3: Auto-merge to DEV · ~1 day
 
@@ -689,9 +696,12 @@ sweep" of Sentry and opens or updates issues. Check that routines are available 
 - [x] Auto-merge for `risk:low` inside `merge-gate.yml`, behind `AUTO_MERGE_ENABLED` (starts `false`). It turns
       auto-merge off again when a push raises the tier. Dependabot update types come from `dependabot/fetch-metadata`,
       which verifies that the commits are Dependabot's.
-- [ ] Make `merge-gate` a required check once it has run correctly on a few PRs
-- [ ] Turn on `AUTO_MERGE_ENABLED`, starting with Dependabot and docs/test-only PRs
-- [ ] Run 2–4 weeks, watch metrics, then consider widening the tiers
+- [x] Make `merge-gate` a required check (2026-11-24, after #20 and #21). That same ruleset change turned off "require
+      approval of the most recent push" (see §4.1).
+- [x] Turn on `AUTO_MERGE_ENABLED` (2026-11-24). To check on the first Dependabot npm patch: the `merge-gate` run's
+      Auto-merge step sees `AUTO_MERGE_ENABLED=true`, because Dependabot-triggered runs get a restricted environment.
+- [ ] Run 2–4 weeks (from 2026-11-24), watch metrics, then consider widening the tiers. **Ongoing:** check the `risk:*`
+      labels on merged PRs, and whether any auto-merged PR caused a problem.
 - Note: auto-merge is enabled with `GITHUB_TOKEN`, so the resulting push to `main` doesn't start `push` workflows (CI on
   `main`). The PR's checks already ran on the same changes. Use an App token if post-merge runs on `main` are needed.
 
@@ -750,10 +760,10 @@ sweep" of Sentry and opens or updates issues. Check that routines are available 
 
 ## 15. Next step
 
-Phases 0, 1 and 2 are done, and Phase 3 is built (see Status at the top). Next:
+Phases 0–3 are done and live (see Status at the top). Next:
 
-1. **Phase 3 rollout:** watch `merge-gate` on a few real PRs (docs-only → `risk:low`, code → `risk:medium`, Dependabot
-   npm patch → `risk:low`), then add `merge-gate` to the ruleset's required checks, then set `AUTO_MERGE_ENABLED=true`.
-2. Phase 2 leftovers: test the round cap and `needs-human` on a PR the fixer can't solve. The next `ai-fix` round will
-   also confirm a bot-triggered re-review after #18.
-3. Follow-ups in issues #11 and #15, and the `review-checklist` skill.
+1. **Watch Phase 3** for 2–4 weeks: the first medium PR (expect `risk:medium` and a failing `merge-gate` until approved),
+   and the first Dependabot npm patch (expect `risk:low` and an auto-merge).
+2. **Phase 2 leftover:** test the round cap and `needs-human` on a PR the fixer can't solve (about 3 paid fix rounds).
+3. Follow-ups in issues #11 and #15.
+4. **Phase 4:** environments and promotion.
