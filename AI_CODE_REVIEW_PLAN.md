@@ -332,9 +332,11 @@ The real workflow is `.github/workflows/ai-review.yml`; read it there rather tha
   re-posting inline findings that already have an open comment.
 - **Gate.** `ai-review-gate` fails on any blocker/major finding and when the review itself fails. It passes when the
   review is skipped on purpose, including after the `ai-review` label is removed. Runs triggered by adding or removing
-  any other label repeat the commit's previous completed gate result, and pass only if it passed. "No result yet" (a
-  review still running) fails until the real gate run replaces it. Adding a label can't flip a failure, or an
-  unfinished review, to a pass.
+  any other label repeat the commit's previous completed gate result, and pass only if it passed, so adding a label
+  can't flip a failure to a pass. Limit: that previous result can predate a review that is still running (e.g. the
+  skipped-review pass from when the PR was opened without the label), so wait for the review to finish before merging.
+  Also, removing `ai-review` passes the gate by design: with opt-in, the gate is a strong default, not an enforcement
+  anyone with triage access can't undo.
 - **Least privilege and cost.** Top-level `permissions: {}`, `--max-turns 30`, `timeout-minutes`, and a concurrency group
   per PR. The job summary shows cost, turns and duration per run.
 

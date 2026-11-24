@@ -270,8 +270,11 @@ jobs:
     # review skipped. GitHub uses the newest ai-review-gate result for a
     # commit, so passing here would overwrite an earlier failure. Those runs
     # repeat the previous completed gate result for the same commit, and pass
-    # only if it passed. "No result yet" (e.g. a review still running) fails;
-    # the real gate run that follows is newer and replaces it.
+    # only if it passed; with no completed result at all they fail.
+    # Limit: that previous result can predate a review that is still running
+    # (e.g. the skipped-review pass from `opened`, before `ai-review` was
+    # added). The running review's gate replaces it when it finishes, so wait
+    # for the review before merging.
     needs: review
     if: always()
     runs-on: ubuntu-latest
