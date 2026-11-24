@@ -210,7 +210,7 @@ CODE_CONVENTIONS.md             # (exists)
   skills/review-checklist/SKILL.md
   skills/repro-with-failing-test/SKILL.md
   schemas/review-findings.json  # JSON schema for structured review output
-policy/risk.yml                 # risk tier rules
+policy/risk.json                 # risk tier rules
 scripts/risk-tier.mjs           # deterministic tier calculation
 .github/
   CODEOWNERS
@@ -475,7 +475,7 @@ jobs:
       - name: Compute risk tier
         id: risk
         run: |
-          tier=$(node scripts/risk-tier.mjs "$PR")   # reads policy/risk.yml, prints low|medium|high
+          tier=$(node scripts/risk-tier.mjs "$PR")   # reads policy/risk.json, prints low|medium|high
           gh pr edit "$PR" --remove-label risk:low,risk:medium,risk:high --add-label "risk:$tier" || true
           echo "tier=$tier" >> "$GITHUB_OUTPUT"
       - name: Check human approvals
@@ -496,7 +496,7 @@ default the action ignores comments from bots, so the reviewer can't trigger it 
 
 ### 6.4 Dependabot: a good first auto-merge candidate
 
-Dependabot PRs for patch and minor versions are tagged `risk:low` by `policy/risk.yml`. Claude reviews the changelog and
+Dependabot PRs for patch and minor versions are tagged `risk:low` by `policy/risk.json`. Claude reviews the changelog and
 diff, and auto-merge lands them in DEV when CI is green. Major versions are `risk:medium`.
 
 ---
@@ -752,5 +752,5 @@ Phases 0 and 1 are done, and Phase 2 is built (see Status at the top). Next:
 
 1. **Phase 2 end-to-end test:** open a PR with a planted bug, add `ai-review`, then `ai-fix`. Expect a commit from the
    `ai-fixer` App and a passing re-review. Then test the round cap and `needs-human`.
-2. **Phase 3:** risk tiers (`policy/risk.yml`), `merge-gate`, and auto-merge for `risk:low` PRs.
+2. **Phase 3:** risk tiers (`policy/risk.json`), `merge-gate`, and auto-merge for `risk:low` PRs.
 3. Follow-ups in issues #11 and #15, and the `review-checklist` skill.

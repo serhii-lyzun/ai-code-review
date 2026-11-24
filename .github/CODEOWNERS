@@ -6,3 +6,17 @@
 /REVIEW.md              @serhii-lyzun
 /CODE_CONVENTIONS.md    @serhii-lyzun
 /AI_CODE_REVIEW_PLAN.md @serhii-lyzun
+# Everything the merge gate rates high, except package.json and
+# package-lock.json: Dependabot patch/minor updates touch only those, and
+# code-owner review would stop them from auto-merging. Other changes to them
+# are still rated high and need an approval in merge-gate.
+/policy/                @serhii-lyzun
+/scripts/               @serhii-lyzun
+/.husky/                @serhii-lyzun
+/src/test/              @serhii-lyzun
+/index.html             @serhii-lyzun
+/tsconfig*.json         @serhii-lyzun
+/*.config.*             @serhii-lyzun
+/.oxlintrc.json         @serhii-lyzun
+/.prettierrc*           @serhii-lyzun
+/.nvmrc                 @serhii-lyzun

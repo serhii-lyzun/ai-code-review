@@ -7,7 +7,8 @@
 //   pr.json: {
 //     "files": [{ "filename": "...", "previous_filename"?: "...", "additions": 1, "deletions": 0 }],
 //     "branch": "feature/x",
-//     "dependabot"?: { "ecosystem": "npm_and_yarn", "updateType": "version-update:semver-patch" }
+//     "dependabot"?: { "ecosystem": "npm_and_yarn", "updateType": "version-update:semver-patch" },
+//     "truncated"?: true   // the file list is incomplete (API limit): always high
 //   }
 // Prints JSON { "tier": "...", "reasons": [...] } to stdout.
 
@@ -44,6 +45,15 @@ const matchesAny = (path, globs) =>
 
 /** Returns { tier, reasons } for a PR described by `pr`, under `policy`. */
 export function classify(policy, pr) {
+  // An incomplete file list could hide a risky change: fail closed.
+  if (pr.truncated) {
+    return {
+      tier: 'high',
+      reasons: [
+        'the changed-file list is incomplete (API limit of 3000 files)',
+      ],
+    }
+  }
   const files = pr.files ?? []
   // A rename touches both paths: classify both, so a file can't be moved out
   // of a high-risk location into a low-risk one unnoticed.

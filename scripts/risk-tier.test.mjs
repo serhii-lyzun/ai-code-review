@@ -34,6 +34,16 @@ describe('globToRegExp', () => {
     assert.ok(!globToRegExp('.github/**').test('.githubx/a'))
   })
 
+  it('matches ? as exactly one character within a segment', () => {
+    assert.ok(globToRegExp('file?.md').test('file1.md'))
+    assert.ok(!globToRegExp('file?.md').test('file12.md'))
+    assert.ok(!globToRegExp('a?b').test('a/b'))
+  })
+
+  it('treats ** without a following slash as anything, across segments', () => {
+    assert.ok(globToRegExp('src/**.ts').test('src/a/b.ts'))
+  })
+
   it('escapes regex characters', () => {
     assert.ok(globToRegExp('tsconfig*.json').test('tsconfig.app.json'))
     assert.ok(!globToRegExp('tsconfig*.json').test('tsconfigXjson'))
@@ -47,7 +57,22 @@ describe('classify', () => {
       tier({ files: [file('src/components/Search.test.tsx', 30, 5)] }),
       'low',
     )
-    assert.equal(tier({ files: [file('src/assets/logo.svg', 0, 0)] }), 'low')
+    assert.equal(tier({ files: [file('src/assets/logo.png', 0, 0)] }), 'low')
+    assert.equal(
+      tier({ files: [file('public/fonts/inter.woff2', 0, 0)] }),
+      'low',
+    )
+  })
+
+  it('does not rate script-capable assets as low', () => {
+    assert.equal(tier({ files: [file('public/evil.html', 5)] }), 'medium')
+    assert.equal(tier({ files: [file('public/sw.js', 5)] }), 'medium')
+    assert.equal(tier({ files: [file('public/icons.svg', 5)] }), 'medium')
+    assert.equal(tier({ files: [file('src/assets/logo.svg', 5)] }), 'medium')
+  })
+
+  it('rates an incomplete file list as high', () => {
+    assert.equal(tier({ files: [file('README.md')], truncated: true }), 'high')
   })
 
   it('rates low-risk files over 100 changed lines as medium', () => {
@@ -110,6 +135,21 @@ describe('classify', () => {
         'low',
       )
     }
+  })
+
+  it('keeps a Dependabot patch update low despite a large lock-file diff', () => {
+    const files = [
+      file('package.json', 1, 1),
+      file('package-lock.json', 900, 900),
+    ]
+    const patch = {
+      ecosystem: 'npm',
+      updateType: 'version-update:semver-patch',
+    }
+    assert.equal(
+      tier({ branch: 'dependabot/npm_and_yarn/x', files, dependabot: patch }),
+      'low',
+    )
   })
 
   it('rates a Dependabot major update, or one touching other files, as high', () => {
