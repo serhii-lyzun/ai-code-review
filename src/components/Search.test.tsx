@@ -72,6 +72,27 @@ describe('Search', () => {
     expect(screen.getByRole('alert')).toHaveTextContent('Search failed')
   })
 
+  it('hides the error as soon as the user types a new query', async () => {
+    const controlled = controlledSearch()
+    render(<Search search={controlled.fn} />)
+    type('ap')
+    await controlled.fail('ap')
+    type('apr')
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    await controlled.respond('apr', ['apricot'])
+    expect(screen.getByText('apricot')).toBeInTheDocument()
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+
+  it('hides the error when the input is cleared', async () => {
+    const controlled = controlledSearch()
+    render(<Search search={controlled.fn} />)
+    type('ap')
+    await controlled.fail('ap')
+    type('')
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+
   it('shows duplicate results once', async () => {
     const controlled = controlledSearch()
     render(<Search search={controlled.fn} />)

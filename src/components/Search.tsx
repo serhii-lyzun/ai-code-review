@@ -46,10 +46,9 @@ function Search({ search }: SearchProps) {
           value={query}
           onChange={(event) => {
             setQuery(event.target.value)
-            if (!event.target.value) {
-              setResults([])
-              setFailed(false)
-            }
+            // A new query replaces any earlier error, even while it is in flight.
+            setFailed(false)
+            if (!event.target.value) setResults([])
           }}
         />
       </label>
