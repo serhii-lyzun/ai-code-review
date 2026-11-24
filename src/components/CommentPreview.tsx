@@ -4,10 +4,11 @@ type CommentPreviewProps = Readonly<{
   text: string
 }>
 
-// `**bold**`, or `_italic_` when the underscores aren't inside a word
-// (so snake_case identifiers and URLs stay as typed). The capture group makes
-// `split` keep the matches at odd indices.
-const FORMATTING = /(\*\*[^*\n]+\*\*|(?<!\w)_[^_\n]+_(?!\w))/
+// `**bold**`, or `_italic_` when the underscores aren't inside a word, in any
+// script (so snake_case identifiers and URLs stay as typed). The capture
+// group makes `split` keep the matches at odd indices.
+const FORMATTING =
+  /(\*\*[^*\n]+\*\*|(?<![\p{L}\p{N}_])_[^_\n]+_(?![\p{L}\p{N}_]))/u
 
 function formatLine(line: string): ReactNode[] {
   return line.split(FORMATTING).map((part, index) => {

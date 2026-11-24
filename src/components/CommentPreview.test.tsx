@@ -53,4 +53,11 @@ describe('CommentPreview', () => {
       'set my_config_file and see https://x.com/a_b_c',
     )
   })
+
+  it('leaves underscores inside non-ASCII words alone', () => {
+    const { container } = render(
+      <CommentPreview text="змінна_для_тесту and café_crème_brûlée" />,
+    )
+    expect(container.querySelector('em')).toBeNull()
+  })
 })
