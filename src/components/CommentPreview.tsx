@@ -1,21 +1,40 @@
+import { Fragment, type ReactNode } from 'react'
+
 type CommentPreviewProps = Readonly<{
   text: string
 }>
 
-// Lightweight formatting for comment previews: **bold**, _italic_ and line breaks.
-function toHtml(text: string): string {
-  return text
-    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
-    .replace(/_(.+?)_/g, '<em>$1</em>')
-    .replace(/\n/g, '<br />')
+// `**bold**`, or `_italic_` when the underscores aren't inside a word
+// (so snake_case identifiers and URLs stay as typed). The capture group makes
+// `split` keep the matches at odd indices.
+const FORMATTING = /(\*\*[^*\n]+\*\*|(?<!\w)_[^_\n]+_(?!\w))/
+
+function formatLine(line: string): ReactNode[] {
+  return line.split(FORMATTING).map((part, index) => {
+    if (index % 2 === 0) return part
+    return part.startsWith('**') ? (
+      <strong key={index}>{part.slice(2, -2)}</strong>
+    ) : (
+      <em key={index}>{part.slice(1, -1)}</em>
+    )
+  })
 }
 
+/**
+ * Live preview of a user's comment with `**bold**`, `_italic_` and line
+ * breaks. Builds React elements, never an HTML string, so any markup in the
+ * text is shown as text and escaped by React.
+ */
 function CommentPreview({ text }: CommentPreviewProps) {
   return (
-    <div
-      className="comment-preview"
-      dangerouslySetInnerHTML={{ __html: toHtml(text) }}
-    />
+    <div>
+      {text.split('\n').map((line, index) => (
+        <Fragment key={index}>
+          {index > 0 && <br />}
+          {formatLine(line)}
+        </Fragment>
+      ))}
+    </div>
   )
 }
 
