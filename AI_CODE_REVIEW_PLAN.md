@@ -373,6 +373,10 @@ The real workflow is `.github/workflows/ai-review.yml`; read it there rather tha
 - Claude Code's `--json-schema` rejects a `$schema: draft 2020-12` line. Leave `$schema` out.
 - Plain `gh pr view` also queries check status, which the job token can't read. Always pass `--json`.
 - `use_sticky_comment` only covers the action's own progress comment, not comments Claude posts.
+- The action refuses runs triggered by a bot unless the bot is in `allowed_bots`. Pushes from the `ai-fixer` App
+  trigger the re-review, so `ai-review.yml` lists exactly that bot (never `'*'`).
+- An App you create isn't usable until it's also **installed** on the repo. Without that, creating its token fails
+  with `404 Not Found` (get a repository installation).
 - The action hides Claude's output. An API key or billing problem shows up only as "no structured_output" with
   `num_turns: 1` and `$0` cost.
 
