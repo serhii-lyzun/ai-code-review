@@ -331,8 +331,10 @@ The real workflow is `.github/workflows/ai-review.yml`; read it there rather tha
   blocker/major count (the same rule as the gate), posts **one summary comment** that it edits on every push, and skips
   re-posting inline findings that already have an open comment.
 - **Gate.** `ai-review-gate` fails on any blocker/major finding and when the review itself fails. It passes when the
-  review is skipped on purpose. Runs triggered by unrelated labels repeat the previous gate result for the commit, so
-  adding a label can't flip a failure to a pass.
+  review is skipped on purpose, including after the `ai-review` label is removed. Runs triggered by adding or removing
+  any other label repeat the commit's previous completed gate result, and pass only if it passed. "No result yet" (a
+  review still running) fails until the real gate run replaces it. Adding a label can't flip a failure, or an
+  unfinished review, to a pass.
 - **Least privilege and cost.** Top-level `permissions: {}`, `--max-turns 30`, `timeout-minutes`, and a concurrency group
   per PR. The job summary shows cost, turns and duration per run.
 
@@ -349,8 +351,9 @@ The real workflow is `.github/workflows/ai-review.yml`; read it there rather tha
 ```yaml
 fix:
   needs: review
-  # same-repo PRs only: fork PRs never get a write token
-  if: needs.review.outputs.blocking != '0' && github.event.pull_request.head.repo.full_name == github.repository
+  # same-repo PRs only: fork PRs never get a write token.
+  # result == 'success': when the review is skipped, `blocking` is empty and '' != '0' would be true.
+  if: needs.review.result == 'success' && needs.review.outputs.blocking != '0' && github.event.pull_request.head.repo.full_name == github.repository
   runs-on: ubuntu-latest
   timeout-minutes: 30
   permissions:
