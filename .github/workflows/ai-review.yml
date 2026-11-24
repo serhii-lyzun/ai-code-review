@@ -281,6 +281,7 @@ jobs:
     needs: review
     if: always()
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     permissions:
       checks: read
     steps:
