@@ -314,11 +314,12 @@ jobs:
     needs: [fix, push]
     if: ${{ !cancelled() && needs.fix.result != 'skipped' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 5
     permissions:
       pull-requests: write
       issues: write
-      actions: write # re-run merge-gate after adding needs-human
+    outputs:
+      needs_human: ${{ steps.comment.outputs.needs_human }}
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       STATUS: ${{ needs.fix.outputs.status }}
@@ -408,24 +409,40 @@ jobs:
           fi
           exit 0
 
-      # A label added with GITHUB_TOKEN doesn't start workflows, so merge-gate
-      # wouldn't see needs-human until the next push or review, and a low-risk
-      # PR could auto-merge meanwhile. merge-gate reads labels live, so re-run
-      # its latest run for the PR's current head once that run has finished.
+  # A label added with GITHUB_TOKEN doesn't start workflows, so merge-gate
+  # wouldn't see needs-human until the next push or review, and a low-risk PR
+  # could auto-merge meanwhile. merge-gate reads labels live, so re-run its
+  # latest run for the PR's current head once that run has finished. Its own
+  # job, so actions: write never sits next to the fix job's untrusted output.
+  retrigger-gate:
+    needs: report
+    if: ${{ !cancelled() && needs.report.outputs.needs_human == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      actions: write
+      pull-requests: read
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
       - name: Re-run merge-gate
-        if: steps.comment.outputs.needs_human == 'true'
         run: |
-          set -euo pipefail
-          head=$(gh pr view "$PR" --repo "$REPO" --json headRefOid --jq .headRefOid)
-          for attempt in $(seq 1 30); do
+          set -uo pipefail
+          not_enforced() {
+            echo "::error::$1. needs-human isn't enforced by merge-gate until the next push or review; re-run merge-gate by hand."
+            exit 1
+          }
+          head=$(gh pr view "$PR" --repo "$REPO" --json headRefOid --jq .headRefOid) || not_enforced "Couldn't read the PR head"
+          for _ in $(seq 1 30); do
             run=$(gh run list --repo "$REPO" --workflow merge-gate.yml --commit "$head" --limit 1 \
-                    --json databaseId,status --jq '.[0] // empty | "\(.databaseId) \(.status)"')
+                    --json databaseId,status --jq '.[0] // empty | "\(.databaseId) \(.status)"') || run=""
             if [ -n "$run" ] && [ "${run#* }" = "completed" ]; then
-              gh run rerun "${run%% *}" --repo "$REPO"
-              echo "Re-ran merge-gate run ${run%% *} for ${head:0:7}"
-              exit 0
+              if gh run rerun "${run%% *}" --repo "$REPO"; then
+                echo "Re-ran merge-gate run ${run%% *} for ${head:0:7}"
+                exit 0
+              fi
+              not_enforced "Re-running merge-gate run ${run%% *} failed"
             fi
             sleep 10
           done
-          echo "::error::No finished merge-gate run for ${head:0:7} to re-run; needs-human isn't enforced until the next push or review"
-          exit 1
+          not_enforced "No finished merge-gate run for ${head:0:7} within about 6 minutes"
