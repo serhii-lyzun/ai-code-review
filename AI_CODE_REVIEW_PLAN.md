@@ -743,7 +743,10 @@ sweep" of Sentry and opens or updates issues. Check that routines are available 
       replaces an older one: reject a waiting prd deploy before rolling back (the rollback run fails loudly otherwise).
 - [x] Simple feature flag: `flags.json` per environment from its `FEATURE_FLAGS` variable, read once before the first
       render, booleans only, fail-closed. Demo flag: `releaseBanner`.
-- [x] Claude release summary before the `prd` approval (§7), advisory and Sonnet.
+- [x] Claude release summary before the `prd` approval (§7), advisory and Sonnet. Two gotchas from the first run (#25):
+      `claude-code-action` rejects `push` events ("Unsupported event type: push"), so the step runs the pinned Claude
+      Code CLI directly; and the CLI rejects a `--json-schema` that declares `"$schema": ".../draft/2020-12/schema"`.
+      `continue-on-error` showed the failed step as passed, so a missing AI summary is now noted in the run summary.
 - [ ] Set up: create the `gh-pages` branch, turn on Pages (branch `gh-pages`, `/`), create `dev`, `stg`, `prd` with
       deployment branch `main` (prd: required reviewer, prevent self-review off, see §4.2), and set `FEATURE_FLAGS={}`.
 - [ ] First deploy end to end, including the prd approval, then a rollback drill (`target=previous`, then `current`), and

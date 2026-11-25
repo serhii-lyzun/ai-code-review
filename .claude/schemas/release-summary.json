@@ -1,5 +1,4 @@
 {
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "Release summary for the prd approver",
   "type": "object",
   "additionalProperties": false,
@@ -13,13 +12,17 @@
       "type": "array",
       "maxItems": 5,
       "description": "Concrete ways this release could break prd, most likely first. Empty if there are none worth naming.",
-      "items": { "type": "string" }
+      "items": {
+        "type": "string"
+      }
     },
     "checks": {
       "type": "array",
       "maxItems": 5,
       "description": "What the approver should look at in stg before approving.",
-      "items": { "type": "string" }
+      "items": {
+        "type": "string"
+      }
     }
   }
 }
