@@ -1,0 +1,118 @@
+name: Rollback
+
+# Puts an environment back on a site it served before, from the gh-pages
+# history (pages-restore.sh): the exact files that were live, no rebuild.
+# Goes through the same deploy-env.yml job as a deploy, so prd still needs its
+# required reviewer and gets the same smoke test.
+#
+#   target=previous  the deployment before the live one, skipping any release
+#                    an earlier rollback moved away from (the default)
+#   target=current   redeploy what is live, e.g. to apply a changed
+#                    FEATURE_FLAGS variable (turn a feature off) without a code change
+#   target=<sha>     a commit that was deployed to this environment before
+#
+#   gh workflow run rollback.yml -f environment=prd -f target=previous
+#
+# Roll back first, fix forward second. Deploy's next run for a new merge to
+# main publishes main again; until then the environment stays rolled back
+# (deploy-plan.sh ignores rollbacks, so the hourly schedule doesn't undo one).
+#
+# Rollbacks and deploys share one queue per environment (deploy-env.yml), and
+# GitHub keeps only the newest waiting job in it: a later deploy waiting for the
+# same environment replaces a waiting rollback, and the other way round. So for
+# prd, first reject any Deploy run waiting for prd approval, then roll back.
+# The report job fails if the rollback didn't run to the end.
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        type: choice
+        options: [prd, stg, dev]
+        default: prd
+      target:
+        description: previous, current, or a commit SHA deployed there before
+        type: string
+        default: previous
+
+concurrency:
+  group: rollback-${{ inputs.environment }}
+  cancel-in-progress: false
+
+permissions: {}
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      sha: ${{ steps.restore.outputs.sha }}
+      current: ${{ steps.restore.outputs.current }}
+    steps:
+      # Credentials stay (contents: read) so the restore can fetch gh-pages.
+      - uses: actions/checkout@v7
+        with:
+          sparse-checkout: .github/scripts
+
+      - name: Restore the site from gh-pages
+        id: restore
+        env:
+          ENVIRONMENT: ${{ inputs.environment }}
+          TARGET: ${{ inputs.target }}
+        run: .github/scripts/pages-restore.sh "$ENVIRONMENT" "$TARGET" restored
+
+      - name: Job summary
+        env:
+          ENVIRONMENT: ${{ inputs.environment }}
+          CURRENT: ${{ steps.restore.outputs.current }}
+          SHA: ${{ steps.restore.outputs.sha }}
+        run: |
+          {
+            echo "## Rollback of $ENVIRONMENT"
+            echo "Live: \`${CURRENT:0:7}\` → restoring \`${SHA:0:7}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: rollback-site
+          path: restored
+          if-no-files-found: error
+          retention-days: 7
+
+  deploy:
+    needs: prepare
+    uses: ./.github/workflows/deploy-env.yml
+    permissions:
+      contents: write
+    with:
+      environment: ${{ inputs.environment }}
+      artifact: rollback-site
+      sha: ${{ needs.prepare.outputs.sha }}
+      kind: rollback
+
+  report:
+    # A cancelled deploy job (replaced in the environment queue) would
+    # otherwise end the run without an obvious failure.
+    needs: [prepare, deploy]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check the rollback finished
+        env:
+          ENVIRONMENT: ${{ inputs.environment }}
+          SHA: ${{ needs.prepare.outputs.sha }}
+          RESULT: ${{ needs.deploy.result }}
+        run: |
+          if [ "$RESULT" = success ]; then
+            echo "$ENVIRONMENT now serves ${SHA:0:7}"
+            exit 0
+          fi
+          if [ -z "$SHA" ]; then
+            echo "::error::Nothing to roll back to: the prepare job failed, see its log. $ENVIRONMENT is unchanged."
+            exit 1
+          fi
+          echo "::error::The rollback of $ENVIRONMENT did not finish (deploy: $RESULT). $ENVIRONMENT was NOT rolled back. Reject any Deploy run waiting for $ENVIRONMENT and run rollback.yml again."
+          exit 1

@@ -15,4 +15,21 @@ describe('App', () => {
     fireEvent.click(button)
     expect(button).toHaveTextContent('Count is 1')
   })
+
+  it('hides the release banner by default', () => {
+    render(<App />)
+    expect(screen.queryByRole('status')).not.toBeInTheDocument()
+  })
+
+  it('shows the release banner when its flag is on', () => {
+    render(<App flags={{ releaseBanner: true }} />)
+    expect(screen.getByRole('status')).toHaveTextContent(
+      'This build was promoted through dev, stg and prd.',
+    )
+  })
+
+  it('hides the release banner when its flag is off', () => {
+    render(<App flags={{ releaseBanner: false }} />)
+    expect(screen.queryByRole('status')).not.toBeInTheDocument()
+  })
 })
