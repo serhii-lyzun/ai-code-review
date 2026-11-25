@@ -1,0 +1,93 @@
+name: Deploy environment
+
+# Reusable: publishes one built site to one environment and smoke-tests it.
+# Called by deploy.yml (promotion) and rollback.yml. The job runs in the GitHub
+# Environment, so its protection rules apply (prd waits for a required
+# reviewer) and FEATURE_FLAGS is that environment's variable.
+#
+# The site goes into the environment's folder on the gh-pages branch, which
+# GitHub Pages serves. Only scripts from .github/scripts run here: no npm, and
+# nothing from the artifact is executed.
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: dev, stg or prd
+        type: string
+        required: true
+      artifact:
+        description: Name of this run's artifact holding the site
+        type: string
+        required: true
+      sha:
+        description: App commit the site was built from (its version.json)
+        type: string
+        required: true
+      kind:
+        description: deploy or rollback
+        type: string
+        default: deploy
+
+permissions: {}
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment:
+      name: ${{ inputs.environment }}
+      url: ${{ steps.publish.outputs.url }}
+    # One deploy or rollback per environment at a time. Never cancel one that
+    # is publishing; a newer one waits (and replaces an older waiting one).
+    concurrency:
+      group: deploy-env-${{ inputs.environment }}
+      cancel-in-progress: false
+    permissions:
+      contents: write # push to gh-pages
+    env:
+      ENVIRONMENT: ${{ inputs.environment }}
+      SHA: ${{ inputs.sha }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          sparse-checkout: .github/scripts
+          persist-credentials: false
+
+      - uses: actions/download-artifact@v7
+        with:
+          name: ${{ inputs.artifact }}
+          path: site
+
+      - name: Publish to gh-pages
+        id: publish
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          FEATURE_FLAGS: ${{ vars.FEATURE_FLAGS }}
+          KIND: ${{ inputs.kind }}
+        run: .github/scripts/pages-publish.sh "$ENVIRONMENT" site "$SHA" "$KIND"
+
+      - name: Smoke test
+        env:
+          URL: ${{ steps.publish.outputs.url }}
+          FLAGS: ${{ steps.publish.outputs.flags }}
+        run: .github/scripts/smoke-test.sh "$URL" "$SHA" "$FLAGS"
+
+      - name: Job summary
+        if: always()
+        env:
+          URL: ${{ steps.publish.outputs.url }}
+          STATUS: ${{ job.status }}
+          KIND: ${{ inputs.kind }}
+        run: |
+          {
+            echo "## $ENVIRONMENT: $STATUS"
+            echo "Commit \`${SHA:0:7}\`${URL:+ · $URL}"
+            if [ "$STATUS" != success ] && [ "$KIND" = rollback ]; then
+              echo
+              echo "The rollback failed. Pick a known-good commit: \`gh workflow run rollback.yml -f environment=$ENVIRONMENT -f target=<sha>\`"
+            elif [ "$STATUS" != success ]; then
+              echo
+              echo "To go back: \`gh workflow run rollback.yml -f environment=$ENVIRONMENT -f target=previous\`"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

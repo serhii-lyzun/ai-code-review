@@ -22,6 +22,13 @@ The full design, rollout status and lessons learned are in [`AI_CODE_REVIEW_PLAN
 4. **Merge.** Low-risk PRs can auto-merge once every required check passes. Medium and high PRs need a human
    decision, and agents never merge on their own.
 
+5. **Deploy.** Every change to `main` that can change the site is built once and promoted through GitHub Pages:
+   [dev](https://serhii-lyzun.github.io/ai-code-review/dev/), then
+   [stg](https://serhii-lyzun.github.io/ai-code-review/stg/), then
+   [prd](https://serhii-lyzun.github.io/ai-code-review/prd/), with a smoke test after each. prd waits for a human
+   approval on the `Deploy` run, whose summary lists what ships and how to roll it back. If prd breaks, roll back first:
+   `gh workflow run rollback.yml -f environment=prd -f target=previous`.
+
 All AI workflows stop when the repository variable `AI_AGENTS_ENABLED` is `false`.
 
 ## Development

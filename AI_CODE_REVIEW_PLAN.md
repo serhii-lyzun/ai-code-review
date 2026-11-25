@@ -16,7 +16,8 @@
 | Labels    | Opt-in triggers: `ai-review` (CI review), `ai-fix` (one fix round), `security-review` (security pass); `@claude` mentions for interactive help. Everything also requires `AI_AGENTS_ENABLED=true` (currently on).                                                                                                                                                                                                                                   |
 | Benchmark | Local reviewer agent: **5/5** planted bugs caught, **0** false positives on the clean control PR. The one CI run (#7, XSS) matched the local result exactly. The planted-bug versions are tagged `benchmark/v1/<name>`; the answer key is kept outside the repo.                                                                                                                                                                                    |
 | Phase 3   | **Live** (#20, 2026-11-24): risk tiers (`policy/risk.json`, `scripts/risk-tier.mjs`) and `merge-gate`. `merge-gate` is a required check and owns the approval rule (low: none; medium/high: a collaborator's approval). Auto-merge is on for `risk:low` (`AUTO_MERGE_ENABLED=true`). Checked on a high PR (#20) and a low one (#21, merged without `--admin`). Not yet seen: a medium PR, and a Dependabot PR with auto-merge on.                   |
-| Next      | Watch Phase 3 for 2–4 weeks; verify the `needs-human` re-run of `merge-gate` (#24); then Phase 4. See §15.                                                                                                                                                                                                                                                                                                                                          |
+| Phase 4   | **Built, not yet live**: `deploy.yml` builds `main` once and promotes it dev → stg → prd on GitHub Pages (folders on `gh-pages`), with smoke tests, a release summary before the prd approval, `rollback.yml` and runtime feature flags. Live once the environments and Pages are set up and the first deploy has run.                                                                                                                              |
+| Next      | Set up the environments and Pages, run the first deploy and a rollback drill (§12, Phase 4). Keep watching Phase 3. See §15.                                                                                                                                                                                                                                                                                                                        |
 
 ---
 
@@ -157,6 +158,13 @@ auto-merge** in Phase 3.
 
 Store deployment secrets as **environment secrets** so only the deploy job for that environment can read them. Agent jobs
 never declare an `environment:`, so they can't read deployment secrets.
+
+**As implemented here:** all three environments are folders on one `gh-pages` branch, served by GitHub Pages
+(`https://serhii-lyzun.github.io/ai-code-review/{dev,stg,prd}/`; the root redirects to `prd/`). The deploy jobs push there
+with `GITHUB_TOKEN` (`contents: write`), so no environment has secrets yet; each has a `FEATURE_FLAGS` variable. `prd`
+has the maintainer as required reviewer with **prevent self-review off**: the maintainer merges and triggers every run, so
+with it on nobody could approve. With a team, turn it on. The `gh-pages` branch isn't covered by the `main` ruleset, so
+anyone with write access can push to it; a ruleset on it would need a bypass for GitHub Actions.
 
 ### 4.3 Secrets, variables, labels
 
@@ -516,11 +524,17 @@ diff, and auto-merge lands them in DEV when CI is green. Major versions are `ris
 
 ### Environments
 
-| Env     | How code gets there                                                  | Who decides                               |
-| ------- | -------------------------------------------------------------------- | ----------------------------------------- |
-| **DEV** | Merge to `main` triggers `deploy.yml` → `dev`                        | Automated (ruleset + auto-merge)          |
-| **STG** | Same artifact, `stg` job `needs: dev` + smoke tests                  | Automated                                 |
-| **PRD** | Same artifact, `prd` job `needs: stg` + e2e; **pauses for approval** | **Human** (Environment required reviewer) |
+| Env     | How code gets there                                            | Who decides                               |
+| ------- | -------------------------------------------------------------- | ----------------------------------------- |
+| **DEV** | Merge to `main` triggers `deploy.yml` → `dev`                  | Automated (ruleset + auto-merge)          |
+| **STG** | Same artifact, `stg` job `needs: dev` + smoke tests            | Automated                                 |
+| **PRD** | Same artifact, `prd` job `needs: stg`; **pauses for approval** | **Human** (Environment required reviewer) |
+
+As built, every stage runs `deploy-env.yml` (publish to the environment's `gh-pages` folder, then `smoke-test.sh`: the
+new `version.json` is served, `index.html` has the React root, every referenced asset and `flags.json` load). It checks
+that the files are served, not that the app renders; a browser e2e test before prd is still open. Pushes that only touch
+docs, tests or agent/policy config don't deploy. An hourly schedule catches up on auto-merged PRs, because their merge is
+made through `GITHUB_TOKEN` and starts no `push` run.
 
 ```yaml
 # deploy.yml (shape)
@@ -537,12 +551,18 @@ jobs:
 Before the PRD approval, Claude can post a **release summary** (changes, risk, AI-authored commits, rollback command) to
 the deployment so the approver can decide in minutes. AI never deploys to PRD on its own.
 
+As built, `release-summary` writes it to the `Deploy` run's summary, which is the page the approver opens. The facts come
+from `release-notes.sh` (PRs since the live prd SHA, their `risk:*` labels, `ai-fix:` rounds, the rollback command), and
+Claude (Sonnet, only Read/Grep/Glob over a diff written for it, no shell, no GitHub write access) adds an advisory summary, risks and what to check in stg below
+them. If Claude fails, prd still waits for approval with the deterministic notes.
+
 ---
 
 ## 8. Workflow B: production bug → AI fix
 
 **Mitigate first, fix second.** For P1/P2 the on-call human runs `rollback.yml` (`workflow_dispatch`, redeploys the previous
-artifact to `prd` through the same environment approval) or turns off the feature flag. The AI pipeline speeds up the
+artifact to `prd` through the same environment approval) or turns off the feature flag (set the `prd` environment's
+`FEATURE_FLAGS` variable, then run `rollback.yml` with `target=current`). The AI pipeline speeds up the
 calm, permanent fix.
 
 ```
@@ -711,9 +731,25 @@ sweep" of Sentry and opens or updates issues. Check that routines are available 
 
 ### Phase 4: Environments · ~2 days
 
-- [ ] Environments `dev`, `stg`, `prd` (§4.2); `deploy.yml` builds once and promotes the artifact
-- [ ] Smoke tests between stages; `rollback.yml`; simple feature flag
-- [ ] Claude release-summary step before the `prd` approval
+- [x] `deploy.yml` builds once (build + unit tests, `version.json` stamped with the SHA) and promotes the artifact through
+      the reusable `deploy-env.yml`. Target: GitHub Pages, one `gh-pages` folder per environment, so the build uses
+      `base: './'` and relative `public/` URLs. A rejected push to `gh-pages` (another environment deploying) is retried.
+- [x] Smoke tests after every stage (`smoke-test.sh`, HTTP only). The schedule catch-up and the skip for docs/tests-only
+      changes live in `deploy-plan.sh`.
+- [x] `rollback.yml`: restores a site from the `gh-pages` history, so it needs no artifact retention. `previous` skips
+      releases that an earlier rollback moved away from, so a second rollback goes further back instead of returning to
+      the broken release. The deploy plan compares with the last real deploy, not with what is live, so the hourly
+      schedule doesn't undo a rollback. Deploys and rollbacks share one queue per environment, where a newer waiting job
+      replaces an older one: reject a waiting prd deploy before rolling back (the rollback run fails loudly otherwise).
+- [x] Simple feature flag: `flags.json` per environment from its `FEATURE_FLAGS` variable, read once before the first
+      render, booleans only, fail-closed. Demo flag: `releaseBanner`.
+- [x] Claude release summary before the `prd` approval (§7), advisory and Sonnet.
+- [ ] Set up: create the `gh-pages` branch, turn on Pages (branch `gh-pages`, `/`), create `dev`, `stg`, `prd` with
+      deployment branch `main` (prd: required reviewer, prevent self-review off, see §4.2), and set `FEATURE_FLAGS={}`.
+- [ ] First deploy end to end, including the prd approval, then a rollback drill (`target=previous`, then `current`), and
+      flip `releaseBanner` in stg.
+- [ ] To check: an auto-merged PR that changes the site gets deployed by the next scheduled run.
+- [ ] Later: a browser e2e test (Playwright) against stg before the prd approval.
 
 ### Phase 5: Production bug pipeline · ~3–5 days
 
@@ -771,4 +807,4 @@ Phases 0–3 are done and live (see Status at the top). Next:
 2. **Verify the `needs-human` re-run** (#24) the next time a fix round hits the limit: `merge-gate` should re-run and
    fail with "the PR has the needs-human label".
 3. Follow-ups in issues #11 and #15.
-4. **Phase 4:** environments and promotion.
+4. **Phase 4:** set up the environments and Pages, then the first deploy and a rollback drill (§12).
