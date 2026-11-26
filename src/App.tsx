@@ -4,6 +4,7 @@ import reactLogo from './assets/react.svg'
 import viteLogo from './assets/vite.svg'
 import './App.css'
 import type { Flags } from './flags/flags.ts'
+import LeaderboardDemo from './components/LeaderboardDemo.tsx'
 import SentryTestError from './components/SentryTestError.tsx'
 
 type AppProps = {
@@ -44,6 +45,8 @@ function App({ flags = {}, environment = 'local' }: AppProps) {
         {/* Never in prd, even if the flag is copied there by mistake. */}
         {flags.sentryTestError && environment !== 'prd' && <SentryTestError />}
       </section>
+
+      {flags.leaderboardDemo && <LeaderboardDemo />}
 
       <div className="ticks"></div>
 

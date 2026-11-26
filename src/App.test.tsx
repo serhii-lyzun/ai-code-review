@@ -53,4 +53,18 @@ describe('App', () => {
       screen.getByRole('button', { name: 'Throw a Sentry test error' }),
     ).toBeInTheDocument()
   })
+
+  it('hides the leaderboard demo by default', () => {
+    render(<App />)
+    expect(
+      screen.queryByRole('region', { name: 'Leaderboard demo' }),
+    ).not.toBeInTheDocument()
+  })
+
+  it('shows the leaderboard demo when its flag is on', () => {
+    render(<App flags={{ leaderboardDemo: true }} />)
+    expect(
+      screen.getByRole('region', { name: 'Leaderboard demo' }),
+    ).toBeInTheDocument()
+  })
 })
