@@ -12,7 +12,7 @@ const rows = () => screen.getAllByRole('listitem').map((li) => li.textContent)
 describe('Leaderboard', () => {
   it('ranks players by score, highest first', () => {
     render(<Leaderboard players={players} />)
-    expect(rows()).toEqual(['Bob: 30', 'Cid: 20', 'Ann: 10'])
+    expect(rows()).toEqual(['B Bob: 30', 'C Cid: 20', 'A Ann: 10'])
   })
 
   it('does not reorder the players array it receives', () => {
@@ -29,6 +29,11 @@ describe('Leaderboard', () => {
         ]}
       />,
     )
-    expect(rows()).toEqual(['Alex: 7', 'Alex: 5'])
+    expect(rows()).toEqual(['A Alex: 7', 'A Alex: 5'])
+  })
+
+  it('shows the initials of each word of the name', () => {
+    render(<Leaderboard players={[{ id: '1', name: 'ann lee', score: 1 }]} />)
+    expect(rows()).toEqual(['AL ann lee: 1'])
   })
 })
