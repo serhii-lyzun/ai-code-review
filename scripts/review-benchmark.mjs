@@ -326,7 +326,12 @@ function report(results, runInfo) {
   const totals = summarize(results)
   const cell = (r) => {
     if (!r.score)
-      return `**error**: ${String(r.error).replace(/\s+/g, ' ').replace(/\|/g, '\\|').slice(0, 120)}`
+      // Cut first, then escape backslashes and pipes, so an escape is never
+      // cut in half and the table row stays intact.
+      return `**error**: ${String(r.error)
+        .replace(/\s+/g, ' ')
+        .slice(0, 120)
+        .replace(/[\\|]/g, '\\$&')}`
     const bugs = r.score.bugs.map(
       (b) => `${b.id}: ${b.status}${b.severity ? ` (${b.severity})` : ''}`,
     )
