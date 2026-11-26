@@ -69,7 +69,9 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
 
-      - uses: anthropics/claude-code-action@v1
+      - name: Claude
+        id: claude
+        uses: anthropics/claude-code-action@v1
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           settings: .claude/ci-readonly-settings.json
@@ -86,3 +88,42 @@ jobs:
             --append-system-prompt "This run is read-only: you cannot edit files, run git, commit or push. Answer in your reply comment. If code should change, say so and suggest adding the ai-fix label to the PR."
             --allowedTools "Read,Grep,Glob,Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh issue view:*)"
             --disallowedTools "Edit,Write,MultiEdit,NotebookEdit,Bash(git:*),Bash(gh pr merge:*),Bash(gh pr edit:*),Bash(gh pr comment:*),Bash(gh issue edit:*),Bash(gh issue comment:*),Bash(gh api:*)"
+
+      # Numbers only (cost, turns, tokens, tool counts) for the AI metrics page:
+      # ai-metrics.yml collects every ai-usage artifact into gh-pages/ai-metrics/.
+      # Inline, not a repo script, so no PR code runs here.
+      - name: Record usage
+        if: always() && steps.claude.outcome != 'skipped'
+        env:
+          RESULT_FILE: ${{ steps.claude.outputs.execution_file }}
+        run: |
+          out="$RUNNER_TEMP/ai-usage.json"
+          [ -n "$RESULT_FILE" ] && [ -s "$RESULT_FILE" ] && jq -c '
+            (if type == "array" then . else [.] end) as $all
+            | ([$all[] | select(.type? == "result")] | last // {}) as $r
+            | ($r.modelUsage // {}) as $m
+            | def sum(f): [$m[] | f // 0] | add // 0;
+            {v: 1, cost_usd: ($r.total_cost_usd // 0), turns: ($r.num_turns // 0),
+             duration_ms: ($r.duration_ms // 0), is_error: ($r.is_error // ($r == {})),
+             subtype: ($r.subtype // "no_result"),
+             tokens: (if ($m | length) > 0
+               then {input: sum(.inputTokens), output: sum(.outputTokens),
+                     cache_read: sum(.cacheReadInputTokens), cache_write: sum(.cacheCreationInputTokens)}
+               else {input: ($r.usage.input_tokens // 0), output: ($r.usage.output_tokens // 0),
+                     cache_read: ($r.usage.cache_read_input_tokens // 0),
+                     cache_write: ($r.usage.cache_creation_input_tokens // 0)} end),
+             models: [$m | to_entries[] | {model: .key, cost_usd: (.value.costUSD // 0)}],
+             tools: ([$all[] | select(.type? == "assistant") | .message.content[]? | select(.type? == "tool_use") | .name]
+               | group_by(.) | map({key: .[0], value: length}) | from_entries)}
+          ' "$RESULT_FILE" > "$out" || true
+          # No result file, or an empty or cut-off one (crash, timeout): still
+          # a run, recorded as an error.
+          [ -s "$out" ] || echo '{"v":1,"is_error":true,"subtype":"no_result"}' > "$out"
+
+      - uses: actions/upload-artifact@v7
+        if: always() && steps.claude.outcome != 'skipped'
+        with:
+          name: ai-usage
+          path: ${{ runner.temp }}/ai-usage.json
+          if-no-files-found: ignore
+          retention-days: 30

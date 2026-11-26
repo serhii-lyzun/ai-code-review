@@ -1,0 +1,83 @@
+name: AI Metrics
+
+# The hosted counterpart of the local /ai-monitoring Grafana dashboard, for CI
+# agents: cost, tokens, cache hits, turns, duration, errors and tool calls per
+# agent, served by GitHub Pages at <pages-url>/ai-metrics/.
+#
+# Each agent workflow uploads an ai-usage artifact (numbers only) from its
+# Claude result. This workflow collects new ones into runs.json
+# (scripts/ai-metrics.mjs, which validates every field and takes the agent and
+# PR from the Actions API) and publishes it with dashboards/ai-metrics.html to
+# the ai-metrics/ folder on gh-pages (.github/scripts/pages-metrics.sh).
+# runs.json on gh-pages is the history: artifacts expire after 30 days, the
+# records don't.
+#
+# Triggers:
+#   workflow_run       after each agent workflow, so the page is minutes behind
+#   schedule           daily catch-up
+#   workflow_dispatch  by hand
+# All three run the default branch's code. Nothing from the artifacts is
+# executed. The page shows the same numbers as the public job summaries.
+
+on:
+  workflow_run:
+    workflows: [AI Review, AI Fix, AI Bugfix, AI Triage, Deploy, Claude]
+    types: [completed]
+  schedule:
+    - cron: '17 5 * * *'
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: ai-metrics
+  cancel-in-progress: false
+
+jobs:
+  collect:
+    # A workflow_run for a run whose jobs were all skipped (claude.yml on
+    # every comment without @claude) has no artifact to collect.
+    if: >-
+      github.ref_name == github.event.repository.default_branch &&
+      (github.event_name != 'workflow_run' || github.event.workflow_run.conclusion != 'skipped')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write # push ai-metrics/ to gh-pages
+      actions: read # list and download ai-usage artifacts
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+
+      - name: Collect new runs
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/site"
+          # Only "not there yet" starts empty. Any other error fails, so a
+          # network blip can't replace the history with the last 30 days.
+          code=$(curl -sSL -o "$RUNNER_TEMP/existing.json" -w '%{http_code}' \
+            -H "Authorization: Bearer $GITHUB_TOKEN" -H 'Accept: application/vnd.github.raw' \
+            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/contents/ai-metrics/runs.json?ref=gh-pages")
+          case "$code" in
+            200) jq -e '.runs | type == "array"' "$RUNNER_TEMP/existing.json" > /dev/null ;;
+            404) echo '{"runs":[]}' > "$RUNNER_TEMP/existing.json" ;;
+            *) echo "::error::Reading gh-pages/ai-metrics/runs.json failed (HTTP $code)"; exit 1 ;;
+          esac
+          node scripts/ai-metrics.mjs --existing "$RUNNER_TEMP/existing.json" --out "$RUNNER_TEMP/site/runs.json"
+          cp dashboards/ai-metrics.html "$RUNNER_TEMP/site/index.html"
+
+      - name: Publish to gh-pages
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          .github/scripts/pages-metrics.sh "$RUNNER_TEMP/site"
+          url=$(.github/scripts/pages-url.sh ai-metrics 2> /dev/null || true)
+          echo "AI metrics: ${url:-<pages-url>/ai-metrics/}" >> "$GITHUB_STEP_SUMMARY"

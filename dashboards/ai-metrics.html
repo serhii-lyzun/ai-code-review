@@ -1,0 +1,731 @@
+<!doctype html>
+<!--
+  AI metrics for the CI agents. Published by .github/workflows/ai-metrics.yml
+  to gh-pages/ai-metrics/index.html, next to the runs.json it reads.
+  Local preview: put a runs.json next to this file and serve the folder
+  (e.g. `npx serve dashboards`). All text from runs.json goes through
+  textContent, never innerHTML. Charts are plain SVG and CSS, no library.
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>AI agent metrics</title>
+    <!-- Served from the same origin as /prd/: no third-party code, nothing
+         loaded except runs.json from this folder. -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; base-uri 'none'; form-action 'none'"
+    />
+    <style>
+      :root {
+        --bg: #f6f7f9;
+        --panel: #ffffff;
+        --text: #1d2330;
+        --muted: #5f6b7a;
+        --border: #e1e5ea;
+        --accent: #3b6fd8;
+        --bad: #c4372f;
+        color-scheme: light;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #111418;
+          --panel: #1a1f26;
+          --text: #e6e9ee;
+          --muted: #95a0ae;
+          --border: #2b323c;
+          --accent: #7aa2f7;
+          --bad: #f07167;
+          color-scheme: dark;
+        }
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--text);
+        font:
+          14px/1.45 system-ui,
+          -apple-system,
+          'Segoe UI',
+          sans-serif;
+      }
+      main {
+        max-width: 1280px;
+        margin: 0 auto;
+        padding: 20px 16px 40px;
+      }
+      header {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+        align-items: baseline;
+        justify-content: space-between;
+        margin-bottom: 16px;
+      }
+      h1 {
+        font-size: 20px;
+        margin: 0;
+      }
+      h2 {
+        font-size: 13px;
+        font-weight: 600;
+        color: var(--muted);
+        margin: 0 0 10px;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+      }
+      .controls {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        align-items: center;
+      }
+      select,
+      button {
+        font: inherit;
+        color: var(--text);
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        padding: 4px 8px;
+      }
+      button[aria-pressed='true'] {
+        border-color: var(--accent);
+        color: var(--accent);
+      }
+      .muted {
+        color: var(--muted);
+      }
+      .stats {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+        gap: 12px;
+        margin-bottom: 12px;
+      }
+      .panel {
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 14px;
+        min-width: 0;
+      }
+      .stat .value {
+        font-size: 24px;
+        font-weight: 650;
+        font-variant-numeric: tabular-nums;
+      }
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(min(100%, 420px), 1fr));
+        gap: 12px;
+        margin-bottom: 12px;
+      }
+      .chart {
+        min-height: 230px;
+      }
+      .chart svg {
+        display: block;
+      }
+      .chart svg text {
+        fill: var(--muted);
+        font-size: 11px;
+      }
+      .chart svg line {
+        stroke: var(--border);
+      }
+      .legend {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 4px 12px;
+        margin-bottom: 6px;
+        color: var(--muted);
+        font-size: 12px;
+      }
+      .legend i {
+        display: inline-block;
+        width: 10px;
+        height: 10px;
+        border-radius: 2px;
+        margin-right: 5px;
+      }
+      .hbar {
+        display: grid;
+        grid-template-columns: minmax(0, 38%) 1fr auto;
+        gap: 8px;
+        align-items: center;
+        margin: 6px 0;
+        font-size: 13px;
+      }
+      .hbar-label {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .hbar-track {
+        height: 14px;
+        background: var(--bg);
+        border-radius: 3px;
+        overflow: hidden;
+      }
+      .hbar-fill {
+        display: block;
+        height: 100%;
+      }
+      .hbar-value {
+        color: var(--muted);
+        font-variant-numeric: tabular-nums;
+      }
+      .table-wrap {
+        overflow-x: auto;
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        font-variant-numeric: tabular-nums;
+      }
+      th,
+      td {
+        text-align: right;
+        padding: 6px 8px;
+        border-bottom: 1px solid var(--border);
+        white-space: nowrap;
+      }
+      th:first-child,
+      td:first-child,
+      td.text,
+      th.text {
+        text-align: left;
+      }
+      th {
+        color: var(--muted);
+        font-weight: 600;
+      }
+      a {
+        color: var(--accent);
+      }
+      .bad {
+        color: var(--bad);
+      }
+      #empty {
+        display: none;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header>
+        <div>
+          <h1>AI agent metrics</h1>
+          <div class="muted" id="meta">Loading…</div>
+        </div>
+        <div class="controls">
+          <span class="muted">Range</span>
+          <span id="ranges"></span>
+          <label class="muted"
+            >Agent
+            <select id="agent">
+              <option value="">all</option>
+            </select>
+          </label>
+        </div>
+      </header>
+
+      <div class="panel" id="empty">
+        No runs in this range yet. Each agent run uploads an
+        <code>ai-usage</code> artifact, and <code>ai-metrics.yml</code> adds it
+        here after the run finishes.
+      </div>
+
+      <section class="stats" id="stats"></section>
+
+      <section class="grid">
+        <div class="panel">
+          <h2>Cost per day by agent (USD)</h2>
+          <div class="chart" id="costByDay"></div>
+        </div>
+        <div class="panel">
+          <h2>Tokens per day by type</h2>
+          <div class="chart" id="tokensByDay"></div>
+        </div>
+        <div class="panel">
+          <h2>Cost by model</h2>
+          <div class="chart" id="costByModel"></div>
+        </div>
+        <div class="panel">
+          <h2>Tool calls by tool</h2>
+          <div class="chart" id="toolCalls"></div>
+        </div>
+      </section>
+
+      <section class="panel" style="margin-bottom: 12px">
+        <h2>By agent</h2>
+        <div class="table-wrap"><table id="byAgent"></table></div>
+      </section>
+
+      <section class="panel">
+        <h2>Recent runs</h2>
+        <div class="table-wrap"><table id="recent"></table></div>
+      </section>
+    </main>
+
+    <script>
+      const AGENT_COLORS = {
+        review: '#3b6fd8',
+        fix: '#2a9d8f',
+        bugfix: '#e76f51',
+        triage: '#9b5de5',
+        'release-summary': '#e9c46a',
+        mention: '#8d99ae',
+      }
+      const TOKEN_TYPES = [
+        ['input', 'Input', '#3b6fd8'],
+        ['output', 'Output', '#e76f51'],
+        ['cache_read', 'Cache read', '#2a9d8f'],
+        ['cache_write', 'Cache write', '#e9c46a'],
+      ]
+      const PALETTE = [
+        '#3b6fd8',
+        '#e76f51',
+        '#2a9d8f',
+        '#9b5de5',
+        '#e9c46a',
+        '#8d99ae',
+        '#f4a261',
+        '#43aa8b',
+      ]
+      const RANGES = [
+        ['7d', 7],
+        ['30d', 30],
+        ['90d', 90],
+        ['All', 0],
+      ]
+      const state = { days: 30, agent: '' }
+      let data = { runs: [], repo: '' }
+
+      const $ = (id) => document.getElementById(id)
+      const el = (tag, text, cls) => {
+        const node = document.createElement(tag)
+        if (text !== undefined) node.textContent = String(text)
+        if (cls) node.className = cls
+        return node
+      }
+      const usd = (n) => '$' + (n >= 100 ? n.toFixed(0) : n.toFixed(2))
+      const compact = (n) =>
+        new Intl.NumberFormat('en', {
+          notation: 'compact',
+          maximumFractionDigits: 1,
+        }).format(n)
+      const secs = (ms) =>
+        ms >= 60000
+          ? (ms / 60000).toFixed(1) + ' min'
+          : Math.round(ms / 1000) + ' s'
+      const pct = (n) => (Number.isFinite(n) ? Math.round(n * 100) + '%' : '–')
+      const sum = (list, f) => list.reduce((s, x) => s + (f(x) || 0), 0)
+      const median = (list) => {
+        if (!list.length) return 0
+        const s = [...list].sort((a, b) => a - b)
+        const mid = Math.floor(s.length / 2)
+        return s.length % 2 ? s[mid] : (s[mid - 1] + s[mid]) / 2
+      }
+      const day = (iso) => String(iso).slice(0, 10)
+      const cacheRate = (runs) => {
+        const read = sum(runs, (r) => r.tokens?.cache_read)
+        const all =
+          read +
+          sum(runs, (r) => r.tokens?.input) +
+          sum(runs, (r) => r.tokens?.cache_write)
+        return all ? read / all : NaN
+      }
+      const css = (name) =>
+        getComputedStyle(document.documentElement).getPropertyValue(name).trim()
+      const repoOk = () => /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(data.repo)
+      const link = (href, text) => {
+        const a = el('a', text)
+        a.href = href
+        a.rel = 'noopener'
+        return a
+      }
+
+      function filtered() {
+        const since = state.days ? Date.now() - state.days * 86400000 : 0
+        return data.runs.filter(
+          (r) =>
+            Date.parse(r.started_at) >= since &&
+            (!state.agent || r.agent === state.agent),
+        )
+      }
+
+      function days(runs) {
+        const first = state.days
+          ? new Date(Date.now() - (state.days - 1) * 86400000)
+          : new Date(runs.length ? runs[0].started_at : Date.now())
+        const out = []
+        for (
+          let d = new Date(day(first.toISOString()));
+          d <= new Date();
+          d.setUTCDate(d.getUTCDate() + 1)
+        )
+          out.push(day(d.toISOString()))
+        return out
+      }
+
+      const SVG = 'http://www.w3.org/2000/svg'
+      const svgEl = (tag, attrs = {}, text) => {
+        const node = document.createElementNS(SVG, tag)
+        for (const [k, v] of Object.entries(attrs)) node.setAttribute(k, v)
+        if (text !== undefined) node.textContent = String(text)
+        return node
+      }
+      const niceMax = (v) => {
+        if (!(v > 0)) return 1
+        const p = 10 ** Math.floor(Math.log10(v))
+        const n = v / p
+        return (n <= 1 ? 1 : n <= 2 ? 2 : n <= 5 ? 5 : 10) * p
+      }
+
+      function legend(box, items) {
+        const l = el('div', undefined, 'legend')
+        for (const [label, color] of items) {
+          const item = el('span')
+          const swatch = el('i')
+          swatch.style.background = color
+          item.append(swatch, document.createTextNode(label))
+          l.append(item)
+        }
+        box.append(l)
+      }
+
+      // Stacked bars, one per day. Hover a segment for its value.
+      function stackedBars(id, labels, series, fmt) {
+        const box = $(id)
+        box.replaceChildren()
+        legend(
+          box,
+          series.map((s) => [s.label, s.color]),
+        )
+        const W = Math.max(box.clientWidth, 260)
+        const [H, L, R, T, B] = [210, 46, 6, 8, 22]
+        const totals = labels.map((_, i) =>
+          series.reduce((acc, s) => acc + s.values[i], 0),
+        )
+        const max = niceMax(Math.max(0, ...totals))
+        const y = (v) => T + (H - T - B) * (1 - v / max)
+        const svg = svgEl('svg', { width: W, height: H, role: 'img' })
+        for (let k = 0; k <= 4; k++) {
+          const v = (max * k) / 4
+          svg.append(
+            svgEl('line', { x1: L, x2: W - R, y1: y(v), y2: y(v) }),
+            svgEl(
+              'text',
+              { x: L - 6, y: y(v) + 4, 'text-anchor': 'end' },
+              fmt(v),
+            ),
+          )
+        }
+        const bw = (W - L - R) / Math.max(1, labels.length)
+        labels.forEach((label, i) => {
+          let acc = 0
+          for (const s of series) {
+            const v = s.values[i]
+            if (!v) continue
+            const rect = svgEl('rect', {
+              x: L + i * bw + bw * 0.15,
+              width: Math.max(1, bw * 0.7),
+              y: y(acc + v),
+              height: Math.max(0.5, y(acc) - y(acc + v)),
+              fill: s.color,
+            })
+            rect.append(svgEl('title', {}, `${label} · ${s.label}: ${fmt(v)}`))
+            svg.append(rect)
+            acc += v
+          }
+        })
+        const every = Math.ceil(
+          labels.length / Math.max(1, Math.floor((W - L - R) / 44)),
+        )
+        labels.forEach((label, i) => {
+          if (i % every === 0)
+            svg.append(
+              svgEl(
+                'text',
+                { x: L + i * bw + bw / 2, y: H - 6, 'text-anchor': 'middle' },
+                label.slice(5),
+              ),
+            )
+        })
+        box.append(svg)
+      }
+
+      // Horizontal bars, largest first.
+      function hBars(id, items, fmt, colorOf) {
+        const box = $(id)
+        box.replaceChildren()
+        if (!items.length) {
+          box.append(el('div', 'No data in this range', 'muted'))
+          return
+        }
+        const max = Math.max(...items.map(([, v]) => v)) || 1
+        items.forEach(([label, value], i) => {
+          const row = el('div', undefined, 'hbar')
+          const name = el('span', label, 'hbar-label')
+          name.title = label
+          const track = el('span', undefined, 'hbar-track')
+          const fill = el('span', undefined, 'hbar-fill')
+          fill.style.width = (100 * value) / max + '%'
+          fill.style.background = colorOf(label, i)
+          track.append(fill)
+          row.append(name, track, el('span', fmt(value), 'hbar-value'))
+          box.append(row)
+        })
+      }
+
+      function renderStats(runs) {
+        const box = $('stats')
+        box.replaceChildren()
+        const errors = runs.filter((r) => r.is_error).length
+        const stats = [
+          ['Cost', usd(sum(runs, (r) => r.cost_usd))],
+          ['Runs', runs.length],
+          [
+            'Avg cost / run',
+            runs.length ? usd(sum(runs, (r) => r.cost_usd) / runs.length) : '–',
+          ],
+          ['Output tokens', compact(sum(runs, (r) => r.tokens?.output))],
+          ['Cache hit rate', pct(cacheRate(runs))],
+          [
+            'Median duration',
+            runs.length ? secs(median(runs.map((r) => r.duration_ms))) : '–',
+          ],
+          ['Errored runs', errors, errors ? 'bad' : ''],
+        ]
+        for (const [label, value, cls] of stats) {
+          const p = el('div', undefined, 'panel stat')
+          p.append(el('h2', label), el('div', value, 'value ' + (cls || '')))
+          box.append(p)
+        }
+      }
+
+      function renderCharts(runs) {
+        const labels = days(runs)
+        const index = new Map(labels.map((d, i) => [d, i]))
+        const perDay = (value) => {
+          const values = labels.map(() => 0)
+          for (const r of runs) {
+            const i = index.get(day(r.started_at))
+            if (i !== undefined) values[i] += value(r) || 0
+          }
+          return values
+        }
+        const agents = [...new Set(runs.map((r) => r.agent))].sort()
+        stackedBars(
+          'costByDay',
+          labels,
+          agents.map((agent) => ({
+            label: agent,
+            color: AGENT_COLORS[agent] || '#999',
+            values: perDay((r) => (r.agent === agent ? r.cost_usd : 0)),
+          })),
+          usd,
+        )
+        stackedBars(
+          'tokensByDay',
+          labels,
+          TOKEN_TYPES.map(([key, label, color]) => ({
+            label,
+            color,
+            values: perDay((r) => r.tokens?.[key]),
+          })),
+          compact,
+        )
+
+        const byModel = new Map()
+        for (const r of runs)
+          for (const m of r.models || [])
+            byModel.set(m.model, (byModel.get(m.model) || 0) + m.cost_usd)
+        const total = sum([...byModel.values()], (c) => c)
+        hBars(
+          'costByModel',
+          [...byModel].sort((a, b) => b[1] - a[1]),
+          (c) => `${usd(c)} · ${pct(c / total)}`,
+          (_, i) => PALETTE[i % PALETTE.length],
+        )
+
+        const byTool = new Map()
+        for (const r of runs)
+          for (const [t, n] of Object.entries(r.tools || {}))
+            byTool.set(t, (byTool.get(t) || 0) + n)
+        hBars(
+          'toolCalls',
+          [...byTool]
+            .sort((a, b) => b[1] - a[1])
+            .slice(0, 15)
+            .map(([t, n]) => [t.replace(/^mcp__/, ''), n]),
+          String,
+          () => css('--accent'),
+        )
+      }
+
+      function table(id, head, rows) {
+        const t = $(id)
+        t.replaceChildren()
+        const tr = el('tr')
+        for (const [h, cls] of head) tr.append(el('th', h, cls))
+        t.append(el('thead'))
+        t.tHead.append(tr)
+        const body = el('tbody')
+        for (const row of rows) {
+          const r = el('tr')
+          for (const [i, cell] of row.entries()) {
+            const td = el('td', undefined, head[i][1])
+            if (cell instanceof Node) td.append(cell)
+            else if (Array.isArray(cell)) {
+              td.textContent = cell[0]
+              td.className = [head[i][1], cell[1]].filter(Boolean).join(' ')
+            } else td.textContent = cell
+            r.append(td)
+          }
+          body.append(r)
+        }
+        t.append(body)
+      }
+
+      function renderTables(runs) {
+        const agents = [...new Set(runs.map((r) => r.agent))].sort()
+        table(
+          'byAgent',
+          [
+            ['Agent'],
+            ['Runs'],
+            ['Cost'],
+            ['Avg cost'],
+            ['Avg turns'],
+            ['Median duration'],
+            ['Cache hit'],
+            ['Errors'],
+          ],
+          agents.map((agent) => {
+            const list = runs.filter((r) => r.agent === agent)
+            const errors = list.filter((r) => r.is_error).length
+            return [
+              agent,
+              list.length,
+              usd(sum(list, (r) => r.cost_usd)),
+              usd(sum(list, (r) => r.cost_usd) / list.length),
+              (sum(list, (r) => r.turns) / list.length).toFixed(1),
+              secs(median(list.map((r) => r.duration_ms))),
+              pct(cacheRate(list)),
+              [
+                errors ? `${errors} (${pct(errors / list.length)})` : '0',
+                errors ? 'bad' : '',
+              ],
+            ]
+          }),
+        )
+
+        const base = repoOk() ? `https://github.com/${data.repo}` : ''
+        table(
+          'recent',
+          [
+            ['Started (UTC)'],
+            ['Agent', 'text'],
+            ['PR / event', 'text'],
+            ['Cost'],
+            ['Turns'],
+            ['Duration'],
+            ['Output'],
+            ['Cache hit'],
+            ['Result', 'text'],
+            ['Run', 'text'],
+          ],
+          [...runs]
+            .reverse()
+            .slice(0, 50)
+            .map((r) => [
+              String(r.started_at).replace('T', ' ').slice(0, 16),
+              [r.agent, 'text'],
+              Number.isInteger(r.pr) && base
+                ? link(`${base}/pull/${r.pr}`, `#${r.pr}`)
+                : [r.event, 'text'],
+              usd(r.cost_usd),
+              r.turns,
+              secs(r.duration_ms),
+              compact(r.tokens?.output || 0),
+              pct(cacheRate([r])),
+              [
+                r.is_error ? r.subtype + ' (error)' : r.subtype,
+                'text' + (r.is_error ? ' bad' : ''),
+              ],
+              Number.isInteger(r.run_id) && base
+                ? link(`${base}/actions/runs/${r.run_id}`, 'log')
+                : '',
+            ]),
+        )
+      }
+
+      function render() {
+        const runs = filtered()
+        $('empty').style.display = runs.length ? 'none' : 'block'
+        renderStats(runs)
+        renderCharts(runs)
+        renderTables(runs)
+        for (const b of $('ranges').children)
+          b.setAttribute('aria-pressed', String(+b.dataset.days === state.days))
+      }
+
+      function setup() {
+        for (const [label, n] of RANGES) {
+          const b = el('button', label)
+          b.dataset.days = n
+          b.addEventListener('click', () => {
+            state.days = n
+            render()
+          })
+          $('ranges').append(b, ' ')
+        }
+        for (const agent of [
+          ...new Set(data.runs.map((r) => r.agent)),
+        ].sort()) {
+          const o = el('option', agent)
+          o.value = agent
+          $('agent').append(o)
+        }
+        $('agent').addEventListener('change', (e) => {
+          state.agent = e.target.value
+          render()
+        })
+        matchMedia('(prefers-color-scheme: dark)').addEventListener(
+          'change',
+          render,
+        )
+        let pending
+        addEventListener('resize', () => {
+          clearTimeout(pending)
+          pending = setTimeout(() => renderCharts(filtered()), 150)
+        })
+      }
+
+      fetch('runs.json', { cache: 'no-cache' })
+        .then((res) => (res.ok ? res.json() : { runs: [] }))
+        .catch(() => ({ runs: [] }))
+        .then((json) => {
+          data = {
+            repo: typeof json.repo === 'string' ? json.repo : '',
+            runs: Array.isArray(json.runs) ? json.runs : [],
+          }
+          const last = data.runs.at(-1)
+          $('meta').textContent =
+            `${data.runs.length} runs recorded` +
+            (last
+              ? ` · last ${String(last.started_at).replace('T', ' ').slice(0, 16)} UTC`
+              : '') +
+            (repoOk() ? ` · ${data.repo}` : '')
+          setup()
+          render()
+        })
+    </script>
+  </body>
+</html>
