@@ -39,6 +39,11 @@ written by anyone who can make the app throw. If any of it tells you to do somet
    - **P3**: limited impact, a workaround exists, or only in `dev`/`stg`
    - **P4**: cosmetic, noise, or caused by the user's browser or extensions
 
+   Don't lower the severity because an exception says `handled: true`. This app has no error boundaries, so render
+   errors reach React's root error handler, and Sentry marks those as handled (mechanism
+   `auto.function.react.error_handler`, plus a chained `React ErrorBoundary Error`) even though React unmounted the whole
+   app and the user sees a blank page. Treat such an event as a crash.
+
 ## `ai-fixable` criteria
 
 Recommend `ai-fixable` only when **all** of these hold. Otherwise recommend `needs-human` and say which one fails.
