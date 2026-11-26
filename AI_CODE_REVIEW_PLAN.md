@@ -871,6 +871,9 @@ sweep" of Sentry and opens or updates issues. Check that routines are available 
       `OTEL_RESOURCE_ATTRIBUTES` `benchmark.run` and `benchmark.case`, so with `/ai-monitoring on` (in a new session)
       tokens and cost show up per case in Grafana. Not used yet: the job summary and the run's `summary.json` already
       give cost, turns and duration per case.
+- [x] CI agent metrics on GitHub Pages (`ai-metrics.yml`, `<pages-url>/ai-metrics/`): cost, tokens, cache hit rate,
+      turns, duration, errors and tool calls per agent and run, from an `ai-usage` artifact each agent workflow uploads.
+      No OpenTelemetry, no vendor, no new secret.
 - [ ] Hosted OpenTelemetry for CI only once several repos or teams run agents
 
 ---

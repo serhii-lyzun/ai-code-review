@@ -16,6 +16,7 @@
 /.husky/                @serhii-lyzun
 /src/test/              @serhii-lyzun
 /index.html             @serhii-lyzun
+/dashboards/            @serhii-lyzun
 /tsconfig*.json         @serhii-lyzun
 /*.config.*             @serhii-lyzun
 /.oxlintrc.json         @serhii-lyzun

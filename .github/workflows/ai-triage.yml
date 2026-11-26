@@ -134,6 +134,45 @@ jobs:
           jq -r '"Cost: $\(.total_cost_usd // "n/a") · Turns: \(.num_turns // "n/a")"' \
             "$RUNNER_TEMP/claude-result.json" | tee -a "$GITHUB_STEP_SUMMARY"
 
+      # Numbers only (cost, turns, tokens, tool counts) for the AI metrics page:
+      # ai-metrics.yml collects every ai-usage artifact into gh-pages/ai-metrics/.
+      # Inline, not a repo script, so no PR code runs here.
+      - name: Record usage
+        if: always() && steps.claude.outcome != 'skipped'
+        env:
+          RESULT_FILE: ${{ runner.temp }}/claude-result.json
+        run: |
+          out="$RUNNER_TEMP/ai-usage.json"
+          [ -n "$RESULT_FILE" ] && [ -s "$RESULT_FILE" ] && jq -c '
+            (if type == "array" then . else [.] end) as $all
+            | ([$all[] | select(.type? == "result")] | last // {}) as $r
+            | ($r.modelUsage // {}) as $m
+            | def sum(f): [$m[] | f // 0] | add // 0;
+            {v: 1, cost_usd: ($r.total_cost_usd // 0), turns: ($r.num_turns // 0),
+             duration_ms: ($r.duration_ms // 0), is_error: ($r.is_error // ($r == {})),
+             subtype: ($r.subtype // "no_result"),
+             tokens: (if ($m | length) > 0
+               then {input: sum(.inputTokens), output: sum(.outputTokens),
+                     cache_read: sum(.cacheReadInputTokens), cache_write: sum(.cacheCreationInputTokens)}
+               else {input: ($r.usage.input_tokens // 0), output: ($r.usage.output_tokens // 0),
+                     cache_read: ($r.usage.cache_read_input_tokens // 0),
+                     cache_write: ($r.usage.cache_creation_input_tokens // 0)} end),
+             models: [$m | to_entries[] | {model: .key, cost_usd: (.value.costUSD // 0)}],
+             tools: ([$all[] | select(.type? == "assistant") | .message.content[]? | select(.type? == "tool_use") | .name]
+               | group_by(.) | map({key: .[0], value: length}) | from_entries)}
+          ' "$RESULT_FILE" > "$out" || true
+          # No result file, or an empty or cut-off one (crash, timeout): still
+          # a run, recorded as an error.
+          [ -s "$out" ] || echo '{"v":1,"is_error":true,"subtype":"no_result"}' > "$out"
+
+      - uses: actions/upload-artifact@v7
+        if: always() && steps.claude.outcome != 'skipped'
+        with:
+          name: ai-usage
+          path: ${{ runner.temp }}/ai-usage.json
+          if-no-files-found: ignore
+          retention-days: 30
+
       - uses: actions/upload-artifact@v7
         if: always() && steps.state.outputs.status == 'ok'
         with:

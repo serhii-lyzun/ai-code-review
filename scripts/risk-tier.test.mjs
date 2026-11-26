@@ -101,6 +101,7 @@ describe('classify', () => {
     assert.equal(tier({ files: [file('vite.config.ts')] }), 'high')
     assert.equal(tier({ files: [file('package.json')] }), 'high')
     assert.equal(tier({ files: [file('scripts/risk-tier.mjs')] }), 'high')
+    assert.equal(tier({ files: [file('dashboards/ai-metrics.html')] }), 'high')
   })
 
   it('rates agent instruction files anywhere in the tree as high', () => {

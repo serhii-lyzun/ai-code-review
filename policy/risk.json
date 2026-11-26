@@ -20,6 +20,7 @@
       ".prettierrc*",
       ".nvmrc",
       "index.html",
+      "dashboards/**",
       "src/test/**",
       "**/CLAUDE.md",
       "**/CLAUDE.local.md",

@@ -6,7 +6,8 @@
 #   workflow_dispatch  always deploys (also the way to retry a failed promotion)
 #   push, schedule     deploy unless <sha> was already deployed to dev, or every
 #                      file changed since the last deploy to dev is one that
-#                      can't change the site (docs, tests, agent and policy config).
+#                      can't change the site (docs, tests, agent and policy config,
+#                      the AI metrics page).
 # "Deployed" means the newest deploy(dev)/redeploy(dev) commit on gh-pages, not
 # what dev serves: after a dev rollback dev serves an older SHA, and comparing
 # with that would let the hourly schedule undo the rollback.
@@ -33,7 +34,7 @@ git cat-file -e "$live^{commit}" 2> /dev/null ||
   decide true "the last dev deploy, ${live:0:7}, isn't in this clone's history"
 
 relevant=$(git diff --name-only "$live" "$sha" | grep -vE \
-  '(\.md$|^src/.*\.test\.tsx?$|^\.claude/|^\.mcp\.json$|^policy/|^scripts/)' || true)
+  '(\.md$|^src/.*\.test\.tsx?$|^\.claude/|^\.mcp\.json$|^policy/|^scripts/|^dashboards/)' || true)
 [ -n "$relevant" ] ||
   decide false "only docs, tests or config changed since ${live:0:7}"
 decide true "$(grep -c . <<< "$relevant") site file(s) changed since ${live:0:7}"
