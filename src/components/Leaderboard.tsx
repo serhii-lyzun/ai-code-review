@@ -12,6 +12,7 @@ type LeaderboardProps = Readonly<{
 const initials = (name: string) =>
   name
     .split(' ')
+    .filter((part) => part !== '')
     .map((part) => part[0].toUpperCase())
     .join('')
 

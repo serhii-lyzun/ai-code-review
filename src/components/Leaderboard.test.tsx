@@ -36,4 +36,15 @@ describe('Leaderboard', () => {
     render(<Leaderboard players={[{ id: '1', name: 'ann lee', score: 1 }]} />)
     expect(rows()).toEqual(['AL ann lee: 1'])
   })
+
+  // Issue #32: submitting the demo form with an empty name crashed the page.
+  it('shows a player with an empty name without crashing', () => {
+    render(<Leaderboard players={[{ id: '1', name: '', score: 1 }]} />)
+    expect(rows()).toEqual([' : 1'])
+  })
+
+  it('ignores extra spaces when building initials', () => {
+    render(<Leaderboard players={[{ id: '1', name: 'Ann  Lee', score: 1 }]} />)
+    expect(rows()).toEqual(['AL Ann  Lee: 1'])
+  })
 })
