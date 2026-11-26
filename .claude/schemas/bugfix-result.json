@@ -1,0 +1,55 @@
+{
+  "title": "BugfixResult",
+  "description": "Structured result of the AI bugfix of an issue. The workflow verifies it (the tests must fail without the fix and pass with it) and turns it into the hotfix PR and an issue comment.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["status", "summary", "root_cause", "tests", "changes", "reason"],
+  "properties": {
+    "status": {
+      "type": "string",
+      "enum": ["fixed", "not_reproducible", "not_fixable"],
+      "description": "fixed: a failing test reproduces the bug and the fix makes it pass. not_reproducible: no test could reproduce it, so nothing was changed. not_fixable: reproduced, but the fix needs a design decision or a protected file."
+    },
+    "summary": {
+      "type": "string",
+      "description": "1-3 sentences for the PR description and the issue comment."
+    },
+    "root_cause": {
+      "type": "string",
+      "description": "Root cause analysis: what went wrong, why, and since which change if known."
+    },
+    "tests": {
+      "type": "array",
+      "description": "The regression tests you added: test file and test name. Empty unless status is fixed.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["file", "name"],
+        "properties": {
+          "file": { "type": "string" },
+          "name": { "type": "string" }
+        }
+      }
+    },
+    "changes": {
+      "type": "array",
+      "description": "The fix: one entry per changed source file. Empty unless status is fixed.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["file", "change"],
+        "properties": {
+          "file": { "type": "string" },
+          "change": {
+            "type": "string",
+            "description": "One sentence: what changed."
+          }
+        }
+      }
+    },
+    "reason": {
+      "type": "string",
+      "description": "Why it was not fixed (status not_reproducible or not_fixable). Empty when fixed."
+    }
+  }
+}

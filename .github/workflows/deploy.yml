@@ -9,6 +9,12 @@ name: Deploy
 # Each stage is GitHub Pages: /dev/, /stg/ and /prd/ on the gh-pages branch
 # (see deploy-env.yml). Roll back with rollback.yml.
 #
+# Sentry (Phase 5, only while the SENTRY_DSN variable is set): the build bakes
+# in the DSN and the commit SHA as the release, sentry-release creates that
+# release with its commits and source maps, and every stage records a deploy.
+# The source maps never ship with the site. All of it is advisory: Sentry
+# being down or misconfigured never blocks a promotion.
+#
 # Triggers:
 #   push to main   the normal path
 #   schedule       catch-up. Auto-merge is enabled with GITHUB_TOKEN, and pushes
@@ -34,6 +40,9 @@ concurrency:
   cancel-in-progress: false
 
 permissions: {}
+
+env:
+  SENTRY_CLI_VERSION: 3.8.2
 
 jobs:
   plan:
@@ -77,6 +86,9 @@ jobs:
       # The PR's ci check ran on the same tree, but a squash merge can combine
       # it with other merges, so the tests run again on what ships.
       - name: Type-check and build
+        env:
+          VITE_SENTRY_DSN: ${{ vars.SENTRY_DSN }}
+          VITE_SENTRY_RELEASE: ${{ vars.SENTRY_DSN != '' && github.sha || '' }}
         run: npm run build
 
       - name: Unit tests
@@ -91,6 +103,29 @@ jobs:
             '{sha: $sha, builtAt: $builtAt, run: $run}' > dist/version.json
           cat dist/version.json
 
+      # The build writes hidden source maps (vite.config.ts). With Sentry on,
+      # debug IDs tie each bundle to its map and the maps go to their own
+      # artifact for sentry-release. The site never ships them.
+      - name: Split off source maps
+        env:
+          SENTRY_DSN: ${{ vars.SENTRY_DSN }}
+        run: |
+          set -euo pipefail
+          if [ -n "$SENTRY_DSN" ]; then
+            npx -y "@sentry/cli@$SENTRY_CLI_VERSION" sourcemaps inject dist
+            mkdir -p sourcemaps
+            (cd dist && find . -name '*.map' -exec cp --parents {} ../sourcemaps/ \;)
+          fi
+          find dist -name '*.map' -delete
+
+      - uses: actions/upload-artifact@v7
+        if: vars.SENTRY_DSN != ''
+        with:
+          name: sourcemaps
+          path: sourcemaps
+          if-no-files-found: error
+          retention-days: 7
+
       - uses: actions/upload-artifact@v7
         with:
           name: site
@@ -98,8 +133,60 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-  dev:
+  sentry-release:
+    # Creates the Sentry release (named after the commit SHA), links its
+    # commits through Sentry's GitHub integration (suspect commits, "Fixes
+    # SHORT-ID" in a commit resolves the issue), and uploads the source maps.
+    # Runs no project code: only the pinned sentry-cli, so the org token never
+    # sits on a runner that ran npm ci or tests. dev waits for it so its deploy
+    # record finds the release, but not for its result.
     needs: build
+    if: vars.SENTRY_DSN != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    env:
+      SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+      SENTRY_ORG: ${{ vars.SENTRY_ORG }}
+      SENTRY_PROJECT: ${{ vars.SENTRY_PROJECT }}
+      SENTRY_URL: ${{ vars.SENTRY_URL || 'https://sentry.io/' }}
+    steps:
+      # set-commits --auto reads the repository's remote and HEAD.
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/download-artifact@v7
+        with:
+          name: site
+          path: release
+
+      - uses: actions/download-artifact@v7
+        with:
+          name: sourcemaps
+          path: release
+
+      - name: Create the release and upload source maps
+        run: |
+          set -euo pipefail
+          if [ -z "$SENTRY_AUTH_TOKEN" ] || [ -z "$SENTRY_ORG" ] || [ -z "$SENTRY_PROJECT" ]; then
+            echo "::error::SENTRY_DSN is set, but SENTRY_AUTH_TOKEN, SENTRY_ORG or SENTRY_PROJECT is missing"
+            exit 1
+          fi
+          cli() { npx -y "@sentry/cli@$SENTRY_CLI_VERSION" "$@"; }
+          cli releases new "$GITHUB_SHA"
+          if ! cli releases set-commits "$GITHUB_SHA" --auto --ignore-missing; then
+            echo "::warning::Couldn't link commits to the release. Is the GitHub integration installed in Sentry, with this repository added?"
+          fi
+          cli sourcemaps upload --release "$GITHUB_SHA" release
+          cli releases finalize "$GITHUB_SHA"
+          echo "Sentry release \`${GITHUB_SHA:0:7}\` created with source maps" >> "$GITHUB_STEP_SUMMARY"
+
+  dev:
+    needs: [build, sentry-release]
+    if: ${{ !cancelled() && needs.build.result == 'success' }}
     uses: ./.github/workflows/deploy-env.yml
     permissions:
       contents: write
@@ -107,9 +194,14 @@ jobs:
       environment: dev
       artifact: site
       sha: ${{ github.sha }}
+    secrets:
+      SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
 
   stg:
+    # Explicit: the default success() also looks at jobs further up, so a
+    # skipped or failed sentry-release would skip it.
     needs: dev
+    if: ${{ !cancelled() && needs.dev.result == 'success' }}
     uses: ./.github/workflows/deploy-env.yml
     permissions:
       contents: write
@@ -117,11 +209,14 @@ jobs:
       environment: stg
       artifact: site
       sha: ${{ github.sha }}
+    secrets:
+      SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
 
   release-summary:
     # Runs while stg deploys, so the summary is ready when prd starts waiting.
     # Advisory only: if it fails, prd still waits for its approval as usual.
     needs: dev
+    if: ${{ !cancelled() && needs.dev.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -261,3 +356,5 @@ jobs:
       environment: prd
       artifact: site
       sha: ${{ github.sha }}
+    secrets:
+      SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}

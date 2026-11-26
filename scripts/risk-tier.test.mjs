@@ -111,6 +111,7 @@ describe('classify', () => {
     )
     assert.equal(tier({ files: [file('docs/AGENTS.md', 5)] }), 'high')
     assert.equal(tier({ files: [file('src/.claude/agents/x.md', 5)] }), 'high')
+    assert.equal(tier({ files: [file('.mcp.json', 5)] }), 'high')
   })
 
   it('rates a rename out of a protected path as high', () => {

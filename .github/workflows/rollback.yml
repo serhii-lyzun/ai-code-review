@@ -91,6 +91,8 @@ jobs:
       artifact: rollback-site
       sha: ${{ needs.prepare.outputs.sha }}
       kind: rollback
+    secrets:
+      SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
 
   report:
     # A cancelled deploy job (replaced in the environment queue) would

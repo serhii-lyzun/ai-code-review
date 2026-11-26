@@ -17,6 +17,9 @@ The full design, rollout status and lessons learned are in [`AI_CODE_REVIEW_PLAN
    | `ai-fix`          | One fix round: Claude fixes blocker/major findings, and the `ai-fixer` App pushes them. |
    | `security-review` | A dedicated Claude security pass, posted as PR comments.                                |
 
+   On **issues**, `sentry` (set by Sentry's GitHub integration) starts an AI triage comment, and `ai-fixable` lets
+   Claude write a failing test and a fix and open a `hotfix/issue-<n>` PR, which then goes through the steps above.
+
    Mention `@claude` in a comment for a read-only answer or explanation.
 
 4. **Merge.** Low-risk PRs can auto-merge once every required check passes. Medium and high PRs need a human
