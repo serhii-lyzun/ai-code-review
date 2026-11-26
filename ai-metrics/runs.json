@@ -1,5 +1,42 @@
 {
  "v": 1,
  "repo": "serhii-lyzun/ai-code-review",
- "runs": []
+ "runs": [
+  {
+   "id": 15118689656,
+   "run_id": 45825203389,
+   "agent": "mention",
+   "event": "issue_comment",
+   "pr": null,
+   "conclusion": "success",
+   "started_at": "2026-11-26T13:02:00Z",
+   "cost_usd": 0.1119039,
+   "turns": 5,
+   "duration_ms": 15097,
+   "is_error": false,
+   "subtype": "success",
+   "tokens": {
+    "input": 5814,
+    "output": 1722,
+    "cache_read": 93880,
+    "cache_write": 33958
+   },
+   "models": [
+    {
+     "model": "claude-haiku-5-5",
+     "cost_usd": 0.0005909
+    },
+    {
+     "model": "claude-sonnet-5-5",
+     "cost_usd": 0.111313
+    }
+   ],
+   "tools": {
+    "Grep": 1,
+    "Read": 1,
+    "ToolSearch": 1,
+    "mcp__github_comment__update_claude_comment": 1
+   }
+  }
+ ]
 }
