@@ -14,11 +14,11 @@
 | Phase 1   | **Done**: reviewer subagent, findings schema, opt-in `ai-review.yml`, planted-bug benchmark, opt-in `security-review.yml`, read-only `@claude` via `claude.yml`, the split test-severity rule in `REVIEW.md`. Not done: the `review-checklist` skill.                                                                                                                                                                                                                                                                                                |
 | Phase 2   | **Done and tested end to end** on #17 (2026-11-24). A planted off-by-one got a blocker and a missing test got a major, so the gate failed. `ai-fix` then pushed `ai-fix: round 1` as `ai-code-review-fixer[bot]` with the fix and three tests, and the re-review passed. Read-only `@claude` answered correctly without changing code. Round cap and `needs-human` tested on #23, including a re-review triggered by the bot itself (confirms #18).                                                                                                  |
 | Labels    | Opt-in triggers: `ai-review` (CI review), `ai-fix` (one fix round), `security-review` (security pass), on issues `sentry` (triage) and `ai-fixable` (bugfix); `@claude` mentions for interactive help. Everything also requires `AI_AGENTS_ENABLED=true` (currently on).                                                                                                                                                                                                                                                                             |
-| Benchmark | Local reviewer agent: **5/5** planted bugs caught, **0** false positives on the clean control PR. The one CI run (#7, XSS) matched the local result exactly. The planted-bug versions are tagged `benchmark/v1/<name>`; the answer key is kept outside the repo.                                                                                                                                                                                                                                                                                     |
+| Benchmark | Local reviewer agent: **5/5** planted bugs caught, **0** false positives on the clean control PR. The one CI run (#7, XSS) matched the local result exactly. The planted-bug versions are tagged `benchmark/v1/<name>`; the answer key is kept outside the repo. Since Phase 6 it is one command (`npm run benchmark`); the re-run of 2026-11-26 (Opus 5.5, rules at `2c0f23e`) got 5/5 and 0 false positives again, with 5 extra blocker/major findings instead of about 11, for $1.39.                                                             |
 | Phase 3   | **Live** (#20, 2026-11-24): risk tiers (`policy/risk.json`, `scripts/risk-tier.mjs`) and `merge-gate`. `merge-gate` is a required check and owns the approval rule (low: none; medium/high: a collaborator's approval). Auto-merge is on for `risk:low` (`AUTO_MERGE_ENABLED=true`). Checked on a high PR (#20) and a low one (#21, merged without `--admin`). Not yet seen: a medium PR, and a Dependabot PR with auto-merge on.                                                                                                                    |
 | Phase 4   | **Live** (#25, #26, 2026-11-25): `deploy.yml` builds `main` once and promotes it dev → stg → prd on GitHub Pages (folders on `gh-pages`), with HTTP smoke tests, a release summary before the prd approval, `rollback.yml` and runtime feature flags. Drilled: two full promotions, a prd rollback and roll-forward, and a flags-only redeploy in stg.                                                                                                                                                                                               |
 | Phase 5   | **Live and drilled** (#28–#33, 2026-11-26): Sentry in the app (lazy-loaded, EU region org `serhii-ht`, project `ai-code-review`), releases, source maps and deploy records from `deploy.yml`, the GitHub integration and an alert rule that opens `sentry` issues for prd. Fire drill end to end: a planted prd crash became Sentry `AI-CODE-REVIEW-2`, GitHub issue #32 13 s later, a correct P2 triage ($0.006), a verified failing test + one-line fix, hotfix PR #33 by the bot, AI review pass, merge, prd, and Sentry resolved in the release. |
-| Next      | Phase 6. Keep watching Phases 3 and 4: an auto-merged PR that changes the site should be deployed by the hourly schedule. See §15.                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| Next      | Phase 6 is under way: CI error text and the repeatable benchmark are done (#35), and the benchmark runs monthly from now on. Keep watching Phases 3 and 4: an auto-merged PR that changes the site should be deployed by the hourly schedule. See §15.                                                                                                                                                                                                                                                                                               |
 
 ---
 
@@ -841,24 +841,51 @@ sweep" of Sentry and opens or updates issues. Check that routines are available 
 
 - [x] Cost, turns and duration per CI review in the job summary (from the action's `execution_file`), plus Console usage
       for the CI workspace. That's enough at this scale.
-- [ ] Local OpenTelemetry stack (the `ai-monitoring` skill) while benchmarking prompts or models locally
+- [x] Print Claude's error text in the CI log when no structured result comes back. `ai-review.yml`, `ai-fix.yml`
+      and `ai-bugfix.yml` gained an "Explain a missing result" step: from the action's `execution_file` it prints the
+      result subtype, `is_error`, turns, cost, `errors` and the result text (or the last assistant text when Claude never
+      finished) as an error annotation and in the job summary. A run that never reached the model, like the first CI
+      benchmark runs (1 turn, $0, `is_error`), now says why. It's inline jq rather than a repo script, so the review job
+      still runs no PR code, and the raw text is printed with workflow commands stopped. `ai-triage.yml` and the release
+      summary, which run the CLI directly, already did this.
+- [x] Repeatable benchmark: `npm run benchmark -- --key ../ai-review-benchmark/answer-key.json`
+      (`scripts/review-benchmark.mjs`). For each `benchmark/v1/*` tag it makes a temporary worktree, copies the
+      working tree's `REVIEW.md`, `CODE_CONVENTIONS.md`, `CLAUDE.md` and `.claude/` over it (so uncommitted prompt
+      changes are what's measured, like CI using the base branch's rules), and runs local `claude -p` with the CI reviewer's read-only tools and the findings schema, 3 cases at a time. It loads none of your own settings (no allow rules, hooks, plugins or memory, only the telemetry env), so every operator gets the same reviewer, and it denies reads of the answer key's folder; a probe confirmed that Read, Grep and `npm` are refused. A case that fails (git or Claude) is reported as an error, and Ctrl-C removes the temporary worktrees. `scripts/benchmark-score.mjs` (with
+      `node:test` tests) scores against `answer-key.json`, the machine-readable answer key next to `answer-key.md`
+      outside the repo. Each planted bug is matched by file, line range and optional keywords, and claims its single
+      most severe finding. The result is caught / weak / missed per bug, clean / false positive on the control, and the
+      other blocker/major findings counted as "extra" (real issues or noise, read them in the case files). `--rescore
+<run dir>` re-scores saved results after an answer-key change, without new reviews. Runs land in
+      `../ai-review-benchmark/runs/<timestamp>-<model>/`.
+- [x] Baseline (2026-11-26, Opus 5.5, rules at `2c0f23e`, about 3 minutes, $1.39): **5/5 caught, 0 false positives**,
+      5 extra blocker/major findings. The first v1 run (before the split test-severity rule) had about 11, mostly
+      "missing test" majors. Today's extras: 3 real ones on `countdown` (no stop at 0, `seconds` prop ignored, no
+      multi-tick test), pagination's NaN page (as in v1), and comment-preview's snake_case italics, now major instead of
+      minor (debatable).
+- [ ] **Monthly** (next: 2026-12-26) and after every change to `REVIEW.md`, `reviewer.md`, the findings schema, the
+      review model or the pinned `claude-code-action`: `npm run benchmark`, compare with the last run, and record the
+      result in the answer key's results table. A missed bug or a false positive blocks the change. More extras is a
+      warning. To benchmark another model, pass `--model`.
+- [ ] Local OpenTelemetry stack (the `ai-monitoring` skill) while benchmarking. Wired: every benchmark case sets
+      `OTEL_RESOURCE_ATTRIBUTES` `benchmark.run` and `benchmark.case`, so with `/ai-monitoring on` (in a new session)
+      tokens and cost show up per case in Grafana. Not used yet: the job summary and the run's `summary.json` already
+      give cost, turns and duration per case.
 - [ ] Hosted OpenTelemetry for CI only once several repos or teams run agents
-- [ ] Print Claude's error text in the CI log when no structured result comes back
-- [ ] Monthly prompt and model review against the planted-bug benchmark (`benchmark/v1/*` tags)
 
 ---
 
 ## 13. Metrics
 
-| Metric                                     | Source                                           | Target / use                             |
-| ------------------------------------------ | ------------------------------------------------ | ---------------------------------------- |
-| AI comment precision                       | 👍/👎 reactions on reviewer comments (`gh api`)  | > 70%                                    |
-| Planted-bug catch rate                     | Benchmark PRs                                    | Re-run on every prompt or model change   |
-| Fixer success (CI green, finding resolved) | `ai-fix:` commits vs. `needs-human`              | Decides automation scope                 |
-| Time to first review, PR cycle time        | GitHub PR timestamps                             | Main business value                      |
-| Escaped defects                            | Sentry issues per release                        | Mustn't rise after auto-merge is enabled |
-| Cost per PR                                | Job summary per run, Console usage per workspace | Budget                                   |
-| MTTR for PRD bugs                          | Sentry first-seen → resolved-in-release          | Value of Workflow B                      |
+| Metric                                     | Source                                           | Target / use                                        |
+| ------------------------------------------ | ------------------------------------------------ | --------------------------------------------------- |
+| AI comment precision                       | 👍/👎 reactions on reviewer comments (`gh api`)  | > 70%                                               |
+| Planted-bug catch rate                     | `npm run benchmark` (`benchmark/v1/*` tags)      | Re-run on every prompt or model change, and monthly |
+| Fixer success (CI green, finding resolved) | `ai-fix:` commits vs. `needs-human`              | Decides automation scope                            |
+| Time to first review, PR cycle time        | GitHub PR timestamps                             | Main business value                                 |
+| Escaped defects                            | Sentry issues per release                        | Mustn't rise after auto-merge is enabled            |
+| Cost per PR                                | Job summary per run, Console usage per workspace | Budget                                              |
+| MTTR for PRD bugs                          | Sentry first-seen → resolved-in-release          | Value of Workflow B                                 |
 
 ---
 
@@ -886,4 +913,5 @@ Phases 0–5 are done and live (see Status at the top). Next:
    fail with "the PR has the needs-human label".
 3. Follow-ups in issues #11 and #15.
 4. **Phase 4** is live. Still to see: an auto-merged PR that changes the site, deployed by the hourly schedule.
-5. **Phase 6:** observability and tuning. Re-run the fire drill after changes to the triage or bugfix agents.
+5. **Phase 6:** run `npm run benchmark` monthly (next 2026-12-26) and after every reviewer prompt, schema or model
+   change. Re-run the fire drill after changes to the triage or bugfix agents.

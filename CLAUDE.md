@@ -13,6 +13,7 @@ This is a Vite + React + TypeScript template with tooling added: Prettier, Husky
 - `npm run lint`: Oxlint (config in `.oxlintrc.json`)
 - `npm run preview`: serve the production build
 - `npm run test:scripts`: `node:test` tests for the Node scripts in `scripts/` (Jest only covers `src/`)
+- `npm run benchmark -- --key ../ai-review-benchmark/answer-key.json`: re-runs the planted-bug benchmark (`benchmark/v1/*` tags) with the reviewer rules in this working tree, using local `claude` (six paid Opus reviews, about $1.40 and 3 minutes a run). Scoring is in `scripts/benchmark-score.mjs`. The answer key and results stay outside the repo. Run it monthly and after any change to `REVIEW.md`, `reviewer.md`, the review schema, the review model or the pinned `claude-code-action`.
 
 ### Formatting & git hooks
 
