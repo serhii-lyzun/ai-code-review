@@ -183,8 +183,8 @@ jobs:
               recommendation=$(jq -r .recommendation "$result")
               echo "## AI triage: $severity, recommends \`$recommendation\`"
               echo
-              if [ -n "$ONCALL" ] && { [ "$severity" = P1 ] || [ "$severity" = P2 ]; }; then
-                echo "$ONCALL: $severity in production. **Mitigate first**: roll back (\`gh workflow run rollback.yml -f environment=prd -f target=previous\`) or turn the feature flag off."
+              if [ "$severity" = P1 ] || [ "$severity" = P2 ]; then
+                echo "${ONCALL:+$ONCALL: }$severity in production. **Mitigate first**: roll back (\`gh workflow run rollback.yml -f environment=prd -f target=previous\`) or turn the feature flag off."
                 echo
               fi
               echo "**What breaks:** $(text .summary)"
