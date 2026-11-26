@@ -284,6 +284,7 @@ jobs:
       ISSUE_TITLE: ${{ github.event.issue.title }}
     outputs:
       pr: ${{ steps.pr.outputs.url }}
+      branch: ${{ steps.pr.outputs.branch }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -326,13 +327,15 @@ jobs:
           git config user.email "${bot_id}+${SLUG}[bot]@users.noreply.github.com"
 
           # Claude's text and the issue title are untrusted: strip CI-skip
-          # tokens, defuse @-mentions, and defuse closing keywords (a zero-width
-          # space after "Fixes " etc.), so only the workflow's own "Fixes" lines
-          # close GitHub issues or resolve Sentry issues.
+          # tokens, defuse @-mentions, and defuse closing keywords, so only the
+          # workflow's own "Fixes" lines close GitHub issues or resolve Sentry
+          # issues. A zero-width space goes between the keyword and what it
+          # would close: #12, owner/repo#12, an issue URL, or a short ID like
+          # PROJ-1A. Other text after "Fix:" is left alone.
           clean() {
             sed -E ':a; s/\[(skip ci|ci skip|no ci|skip actions|actions skip)\]//I; ta; /^[[:space:]]*skip-checks[[:space:]]*:/Id' |
               sed 's/@/@\xE2\x80\x8B/g' |
-              sed -E 's/\b(close[sd]?|fix(e[sd])?|resolve[sd]?)([[:space:]:]+)/\1\3\xE2\x80\x8B/Ig'
+              sed -E 's/\b(close[sd]?|fix(e[sd])?|resolve[sd]?)([[:space:]:]+)(#|[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+#|https?:|[A-Z][A-Z0-9_]*-[0-9A-Z]+\b)/\1\3\xE2\x80\x8B\4/Ig'
           }
           title=$(printf '%s' "$ISSUE_TITLE" | tr '\r\n' '  ' | clean | cut -c 1-60)
           fixes_sentry=""
@@ -364,6 +367,7 @@ jobs:
           git commit -q -F "$RUNNER_TEMP/commit-message.txt"
           # A plain push to a new branch: if it appeared meanwhile, this fails.
           git push "https://x-access-token:${TOKEN}@github.com/${REPO}.git" "HEAD:refs/heads/${BRANCH}"
+          echo "branch=pushed" >> "$GITHUB_OUTPUT"
 
           {
             echo "## AI bugfix for #$ISSUE"
@@ -400,6 +404,7 @@ jobs:
       FIX_STATUS: ${{ needs.fix.outputs.status }}
       PUSH_RESULT: ${{ needs.push.result }}
       PR_URL: ${{ needs.push.outputs.pr }}
+      BRANCH_PUSHED: ${{ needs.push.outputs.branch }}
       RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
     steps:
       # First, so the label always comes off and re-adding it starts a new attempt.
@@ -448,6 +453,10 @@ jobs:
               echo
               echo "$(text .reason). Nothing was pushed. See the [run log]($RUN_URL)."
               needs_human=true
+            elif [ "$FIX_STATUS" = fixed ] && [ "$BRANCH_PUSHED" = pushed ]; then
+              echo "## AI bugfix: \`$BRANCH\` pushed, but the PR wasn't opened"
+              echo
+              echo "The fix passed its checks and the branch is pushed, but opening the PR failed. Most likely the ai-fixer App lacks **Pull requests: Read and write**. Fix that, then delete \`$BRANCH\` and re-run the failed jobs of the [run]($RUN_URL), or open the PR from the branch by hand."
             elif [ "$FIX_STATUS" = fixed ] && [ "$PUSH_RESULT" != success ]; then
               echo "## AI bugfix: verified, but the PR wasn't opened"
               echo
