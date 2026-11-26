@@ -3,7 +3,11 @@ import { createRoot } from 'react-dom/client'
 import './index.css'
 import App from './App.tsx'
 import { fetchFlags } from './flags/flags.ts'
-import { initMonitoring, monitoringConfig } from './monitoring/monitoring.ts'
+import {
+  environmentFromPath,
+  initMonitoring,
+  monitoringConfig,
+} from './monitoring/monitoring.ts'
 
 // Flags are read and Sentry is started once per page load, before the first
 // render, so App gets the flags as a plain prop and render errors reach
@@ -14,7 +18,10 @@ void Promise.all([
 ]).then(([flags, errorHandlers]) => {
   createRoot(document.getElementById('root')!, errorHandlers).render(
     <StrictMode>
-      <App flags={flags} />
+      <App
+        flags={flags}
+        environment={environmentFromPath(window.location.pathname)}
+      />
     </StrictMode>,
   )
 })
