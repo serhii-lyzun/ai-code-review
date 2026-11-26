@@ -10,6 +10,7 @@ import { relative, resolve } from 'node:path'
 const PROTECTED = [
   /^\.github\//,
   /^\.claude\//,
+  /(^|\/)\.mcp\.json$/, // MCP servers the agent may call
   /^\.husky\//,
   /^(CLAUDE|REVIEW|CODE_CONVENTIONS|AI_CODE_REVIEW_PLAN)\.md$/,
   /^package(-lock)?\.json$/,

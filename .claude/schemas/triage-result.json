@@ -1,0 +1,72 @@
+{
+  "title": "TriageResult",
+  "description": "Structured result of the AI triage of a production error. The workflow turns it into an issue comment; it never sets labels from it except ai-triaged.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "severity",
+    "summary",
+    "cause",
+    "location",
+    "suspect_commits",
+    "duplicate_of",
+    "recommendation",
+    "recommendation_reason",
+    "repro"
+  ],
+  "properties": {
+    "severity": {
+      "type": "string",
+      "enum": ["P1", "P2", "P3", "P4"],
+      "description": "P1: prd unusable for most users. P2: a main feature broken in prd, or many users hit it. P3: limited impact or a workaround, or only in dev/stg. P4: cosmetic or noise."
+    },
+    "summary": {
+      "type": "string",
+      "description": "1-3 sentences: what breaks for users, where and since when."
+    },
+    "cause": {
+      "type": "string",
+      "description": "The most likely root cause, with how confident you are. Say so when the evidence is not enough."
+    },
+    "location": {
+      "type": "string",
+      "description": "The app file and line where it goes wrong (e.g. src/components/Leaderboard.tsx:12), or an empty string if unknown."
+    },
+    "suspect_commits": {
+      "type": "array",
+      "maxItems": 3,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["sha", "reason"],
+        "properties": {
+          "sha": {
+            "type": "string",
+            "description": "Short SHA from recent-commits.txt."
+          },
+          "reason": {
+            "type": "string",
+            "description": "Why this commit may have caused it."
+          }
+        }
+      }
+    },
+    "duplicate_of": {
+      "type": "integer",
+      "description": "Number of an existing issue from related-issues.json with the same root cause, or 0."
+    },
+    "recommendation": {
+      "type": "string",
+      "enum": ["ai-fixable", "needs-human"],
+      "description": "ai-fixable only when every ai-fixable criterion in triage.md holds."
+    },
+    "recommendation_reason": {
+      "type": "string",
+      "description": "One sentence: which criteria hold or fail."
+    },
+    "repro": {
+      "type": "string",
+      "description": "How a unit test could reproduce it: component or function, input, expected vs actual. Empty if you cannot tell."
+    }
+  }
+}

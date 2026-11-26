@@ -27,3 +27,7 @@ coverage
 # AI review and fix workflow scratch files (CI only)
 .ai-review
 .ai-fix
+
+# AI triage and bugfix workflow scratch files (CI only)
+.ai-triage
+.ai-bugfix

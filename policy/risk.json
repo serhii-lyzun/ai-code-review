@@ -24,7 +24,8 @@
       "**/CLAUDE.md",
       "**/CLAUDE.local.md",
       "**/AGENTS.md",
-      "**/.claude/**"
+      "**/.claude/**",
+      "**/.mcp.json"
     ],
     "maxChangedLines": 400,
     "branchPrefixes": ["hotfix/"]

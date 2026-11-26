@@ -6,18 +6,19 @@
 > YAML and config below are working starting points. Action inputs and CLI flags change between versions, so check
 > each one against the current docs of `anthropics/claude-code-action` and Claude Code before you rely on it.
 
-## Status (2026-11-24)
+## Status (2026-11-26)
 
 | Area      | State                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | --------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Phase 0   | **Done**: CI, Dependabot, CODEOWNERS, `REVIEW.md`, ruleset on `main` (with a CodeQL rule), secret scanning + push protection, CodeQL. The repo is **public**, because rulesets aren't available for private repos on the free plan.                                                                                                                                                                                                                 |
 | Phase 1   | **Done**: reviewer subagent, findings schema, opt-in `ai-review.yml`, planted-bug benchmark, opt-in `security-review.yml`, read-only `@claude` via `claude.yml`, the split test-severity rule in `REVIEW.md`. Not done: the `review-checklist` skill.                                                                                                                                                                                               |
 | Phase 2   | **Done and tested end to end** on #17 (2026-11-24). A planted off-by-one got a blocker and a missing test got a major, so the gate failed. `ai-fix` then pushed `ai-fix: round 1` as `ai-code-review-fixer[bot]` with the fix and three tests, and the re-review passed. Read-only `@claude` answered correctly without changing code. Round cap and `needs-human` tested on #23, including a re-review triggered by the bot itself (confirms #18). |
-| Labels    | Opt-in triggers: `ai-review` (CI review), `ai-fix` (one fix round), `security-review` (security pass); `@claude` mentions for interactive help. Everything also requires `AI_AGENTS_ENABLED=true` (currently on).                                                                                                                                                                                                                                   |
+| Labels    | Opt-in triggers: `ai-review` (CI review), `ai-fix` (one fix round), `security-review` (security pass), on issues `sentry` (triage) and `ai-fixable` (bugfix); `@claude` mentions for interactive help. Everything also requires `AI_AGENTS_ENABLED=true` (currently on).                                                                                                                                                                            |
 | Benchmark | Local reviewer agent: **5/5** planted bugs caught, **0** false positives on the clean control PR. The one CI run (#7, XSS) matched the local result exactly. The planted-bug versions are tagged `benchmark/v1/<name>`; the answer key is kept outside the repo.                                                                                                                                                                                    |
 | Phase 3   | **Live** (#20, 2026-11-24): risk tiers (`policy/risk.json`, `scripts/risk-tier.mjs`) and `merge-gate`. `merge-gate` is a required check and owns the approval rule (low: none; medium/high: a collaborator's approval). Auto-merge is on for `risk:low` (`AUTO_MERGE_ENABLED=true`). Checked on a high PR (#20) and a low one (#21, merged without `--admin`). Not yet seen: a medium PR, and a Dependabot PR with auto-merge on.                   |
 | Phase 4   | **Live** (#25, #26, 2026-11-25): `deploy.yml` builds `main` once and promotes it dev → stg → prd on GitHub Pages (folders on `gh-pages`), with HTTP smoke tests, a release summary before the prd approval, `rollback.yml` and runtime feature flags. Drilled: two full promotions, a prd rollback and roll-forward, and a flags-only redeploy in stg.                                                                                              |
-| Next      | Watch Phases 3 and 4: an auto-merged PR that changes the site should be deployed by the hourly schedule. Then Phase 5. See §15.                                                                                                                                                                                                                                                                                                                     |
+| Phase 5   | **Built, not live yet**: Sentry in the app (lazy-loaded, only with a DSN), releases, source maps and deploy records from `deploy.yml`, `ai-triage.yml` and `ai-bugfix.yml` with the `triage` and `bugfix` agents and the `repro-with-failing-test` skill. Waits for a Sentry org, its GitHub integration and the secrets (§12, Phase 5), then the fire drill.                                                                                       |
+| Next      | Set up Sentry and run the Phase 5 fire drill. Keep watching Phases 3 and 4: an auto-merged PR that changes the site should be deployed by the hourly schedule. See §15.                                                                                                                                                                                                                                                                             |
 
 ---
 
@@ -30,7 +31,7 @@
 | Auto-merge to **DEV** (`main`)?       | **Yes, for low-risk PRs.** GitHub **auto-merge** plus **rulesets** plus a `merge-gate` check. GitHub does the merge once every required check passes.                                                                                                                                                                 |
 | Auto-merge to **STG**?                | **No merging.** STG is a GitHub **Environment**. The deploy workflow promotes the same build artifact automatically after DEV checks pass.                                                                                                                                                                            |
 | Auto-merge to **PRD**?                | **No.** PRD is a GitHub Environment with **required reviewers** and **prevent self-review** turned on, so a human approves every production deployment, AI hotfixes included.                                                                                                                                         |
-| PRD bug → AI fix → AI review → merge? | **Yes, up to the PRD approval.** Sentry alert → GitHub issue → Claude triage (Sentry MCP) → human adds `ai-fixable` → Claude writes a failing test and the fix → hotfix PR → Workflow A → human approves the PRD deploy. **Roll back first.**                                                                         |
+| PRD bug → AI fix → AI review → merge? | **Yes, up to the PRD approval.** Sentry alert → GitHub issue → Claude triage (Sentry data fetched by the workflow) → human adds `ai-fixable` → Claude writes a failing test and the fix → hotfix PR → Workflow A → human approves the PRD deploy. **Roll back first.**                                                |
 
 ---
 
@@ -102,7 +103,7 @@
                     │ Ruleset on main ──▶ merge ──▶ deploy.yml                        │
                     │     dev (auto) ──▶ stg (auto + smoke) ──▶ prd (human approval) │
                     └────────────────────────────────────────────────────────────────┘
- Sentry alert ──▶ GitHub issue ──▶ ai-triage.yml (Claude + Sentry MCP, Haiku)
+ Sentry alert ──▶ GitHub issue ──▶ ai-triage.yml (Claude + Sentry data, Haiku)
                                    human adds `ai-fixable`
                                    ──▶ ai-bugfix.yml (Claude, failing test + fix) ──▶ hotfix PR ──▶ Workflow A
 ```
@@ -169,13 +170,19 @@ anyone with write access can push to it; a ruleset on it would need a bypass for
 ### 4.3 Secrets, variables, labels
 
 - **Secrets:** `ANTHROPIC_API_KEY` (from a dedicated Console **workspace** with a spend limit), `AI_FIXER_APP_ID`,
-  `AI_FIXER_PRIVATE_KEY`, `SENTRY_AUTH_TOKEN` (read-only scopes). Add `ANTHROPIC_API_KEY` to **Dependabot secrets**
-  too, because Dependabot-triggered runs can't read Actions secrets.
-- **Variables:** `AI_AGENTS_ENABLED` (kill switch, currently `true`), `AI_MAX_FIX_ROUNDS=3`.
+  `AI_FIXER_PRIVATE_KEY`. Add `ANTHROPIC_API_KEY` to **Dependabot secrets** too, because Dependabot-triggered runs
+  can't read Actions secrets. Phase 5 adds two Sentry tokens with different jobs: `SENTRY_AUTH_TOKEN` (an organization
+  auth token, scope `org:ci`: releases, source maps, deploys; used only by `sentry-release` and the deploy jobs) and
+  `SENTRY_TRIAGE_TOKEN` (a read-only token, `org:read`, `project:read`, `event:read`; used only to fetch issue context
+  for the triage and bugfix agents).
+- **Variables:** `AI_AGENTS_ENABLED` (kill switch, currently `true`), `AI_MAX_FIX_ROUNDS=3`. Phase 5: `SENTRY_DSN`
+  (turns Sentry on: the build bakes it in), `SENTRY_ORG`, `SENTRY_PROJECT`, optional `SENTRY_URL` (e.g.
+  `https://de.sentry.io/` for an EU org) and `AI_ONCALL` (who the triage comment mentions on P1/P2, e.g. `@user`).
 - **Environment `ai-fixer`:** holds `AI_FIXER_APP_ID` and `AI_FIXER_PRIVATE_KEY`, used only by the fixer's `push` job.
 - **Labels.** Keep two kinds apart:
   - **Trigger labels** are verbs that a human adds to start an agent: `ai-review`, `ai-fix`, `security-review` (all
-    exist) and `ai-fixable` (Phase 5). On a public repo only people with triage access or higher can add labels, so labels
+    exist), `sentry` (starts the AI triage; Sentry's integration sets it) and `ai-fixable` (starts the AI bugfix).
+    On a public repo only people with triage access or higher can add labels, so labels
     double as a permission check for paid runs.
   - **State labels** are set by automation: `needs-human` (exists), `ai-reviewed`, `risk:low` / `risk:medium` /
     `risk:high`, `sentry`, `hotfix`.
@@ -329,8 +336,11 @@ diff again as a second line of defense.
 }
 ```
 
-Developers authenticate Sentry once in Claude Code (`/mcp`). In CI, the triage workflow passes MCP config with a
-read-only `SENTRY_AUTH_TOKEN`.
+Developers authenticate Sentry once in Claude Code (`/mcp`). **As implemented, CI doesn't use the MCP server:** the
+triage and bugfix workflows fetch the Sentry issue and its latest event through the REST API with the read-only
+`SENTRY_TRIAGE_TOKEN` (`.github/scripts/sentry-context.sh`) and give Claude the trimmed result as a file. The token never
+reaches Claude's process, Claude needs no network tools, and the data is cut down to what a fix needs (no request, user
+or cookie data) before an LLM sees it.
 
 ---
 
@@ -567,8 +577,9 @@ calm, permanent fix.
 
 ```
 [1] DETECT     Sentry alert rule → creates GitHub issue (Sentry GitHub integration), label `sentry`
-[2] TRIAGE     ai-triage.yml (issues: opened/labeled `sentry`) → triage subagent, Haiku, Sentry MCP read-only
-                 - dedupe, severity P1–P4, stack trace, release SHA, suspect commits (git log/blame)
+[2] TRIAGE     ai-triage.yml (issues: opened/labeled `sentry`) → triage subagent, Haiku, Read/Grep/Glob only;
+               the workflow fetches the Sentry issue + latest event (read-only token) and recent commits into files
+                 - dedupe, severity P1–P4, stack trace, release SHA, suspect commits (git log)
                  - comments analysis, proposes `ai-fixable` or `needs-human`
                  - P1/P2: also @-mentions on-call team
 [3] MITIGATE   Human: rollback / flag off if needed
@@ -576,6 +587,7 @@ calm, permanent fix.
 [5] FIX        ai-bugfix.yml → bugfix subagent (Sonnet, ai-fixer App token):
                  - branch hotfix/issue-<n>
                  - writes a FAILING test reproducing the bug (repro-with-failing-test skill); if it can't → comment + stop
+                 - the workflow checks it: the new tests alone must FAIL on main, everything must PASS with the fix
                  - minimal fix, tests pass, opens PR "Fixes #<n>", RCA in description,
                    commit message includes "Fixes <SENTRY-SHORT-ID>" so Sentry resolves on release
 [6] REVIEW     Workflow A (hotfix/* = risk:high → human approval required)
@@ -587,8 +599,9 @@ calm, permanent fix.
 **`ai-fixable` criteria:** a clear app-code stack trace, reproducible by a test, not in auth/payments/data/security, and not a
 security incident.
 
-**Data:** Sentry events can contain PII. Turn on Sentry data scrubbing and give the triage agent a token with read-only
-scopes. Check that sending production error data to Anthropic is covered by your DPA. Anthropic offers commercial terms and
+**Data:** Sentry events can contain PII. The SDK is started with `dataCollection` off for user info, cookies, headers,
+bodies and query strings (`src/monitoring/monitoring.ts`), `sentry-context.sh` keeps only the exception, frames,
+breadcrumbs and a few tags, and the triage token has read-only scopes. Also turn on Sentry's server-side data scrubbing. Check that sending production error data to Anthropic is covered by your DPA. Anthropic offers commercial terms and
 zero-data-retention options for API customers.
 
 **Optional:** a scheduled workflow or a Claude Code scheduled cloud agent (routine) that runs a daily "production health
@@ -764,11 +777,41 @@ sweep" of Sentry and opens or updates issues. Check that routines are available 
 
 ### Phase 5: Production bug pipeline · ~3–5 days
 
-- [ ] Add Sentry to the React app (`@sentry/react`), upload source maps and releases from `deploy.yml`
-- [ ] Sentry GitHub integration: alert rule → GitHub issue, suspect commits, resolve-via-commit
-- [ ] `triage.md` + `ai-triage.yml` (Sentry MCP, read-only token)
-- [ ] `bugfix.md` + `repro-with-failing-test` skill + `ai-bugfix.yml` (on `ai-fixable` label)
-- [ ] Fire drill: plant a runtime error, deploy to `prd`, and follow it from Sentry to fixed release
+- [x] Sentry in the app (`@sentry/react`, `src/monitoring/`): started before the first render, like the flags, and
+      wired into React 19's root error handlers. Off without a DSN (local dev, tests), and then not even downloaded:
+      the SDK is a lazy chunk (~31 kB gzipped), loaded through a wrapper that re-exports only `init` and
+      `reactErrorHandler`, because a dynamic import of the whole namespace bundles all of it (~150 kB). The environment
+      comes from the folder the page is served from (`/dev/`, `/stg/`, `/prd/`), since one build is promoted through all
+      three. The release is the commit SHA, baked in at build time.
+- [x] `deploy.yml`: hidden source maps, debug IDs injected by `sentry-cli`, maps split into their own artifact and
+      deleted from the site. A `sentry-release` job (no npm, only the pinned `sentry-cli`, so the org token never sits
+      next to code that ran tests) creates the release, links commits (`set-commits --auto`) and uploads the maps. Every
+      deploy and rollback records a Sentry deploy (`sentry-deploy.sh`). All advisory: Sentry never blocks a promotion.
+      Gotcha: `dev` now waits for `sentry-release` without depending on its result, and then `stg` and
+      `release-summary` need explicit `if:`s, because the default `success()` also looks at jobs further up and would
+      skip them when `sentry-release` is skipped or fails.
+- [x] `triage.md` + `ai-triage.yml` on the `sentry` label. **Not the Sentry MCP in CI** (see §5.4): the workflow fetches
+      the data, Claude (Haiku, pinned CLI) only reads files, and a separate job posts the comment with @-mentions
+      defused and a credential check. It recommends; only a human adds `ai-fixable`.
+- [x] `bugfix.md` + `repro-with-failing-test` skill + `ai-bugfix.yml` on the `ai-fixable` label. Same split as
+      `ai-fix.yml` (`context` with the Sentry token, `fix` with Claude, `push` in the `ai-fixer` environment). It
+      checks the reproduction deterministically: the new tests must fail without the fix (with `--passWithNoTests`, so
+      an empty test file can't count), then lint/build/all tests must pass with it. It opens a `hotfix/issue-<n>` PR with
+      `hotfix` and `ai-review`, `Fixes #<n>` and `Fixes <SHORT-ID>`. Not reproducible → comment + `needs-human`.
+- [x] `.mcp.json` (Sentry MCP for local sessions), protected like agent config (risk tier, CODEOWNERS, fixer hook).
+- [x] Labels `sentry`, `ai-fixable`, `ai-triaged`, `hotfix`.
+- [ ] **Set up Sentry** (manual):
+  1. Create a Sentry org and a React project. Set the variables `SENTRY_DSN`, `SENTRY_ORG`, `SENTRY_PROJECT` (and
+     `SENTRY_URL` for a non-US region).
+  2. Secrets: `SENTRY_AUTH_TOKEN` (Settings → Auth Tokens → organization token) and `SENTRY_TRIAGE_TOKEN` (a personal
+     or internal-integration token with only `org:read`, `project:read`, `event:read`). Optionally `AI_ONCALL`.
+  3. Install Sentry's GitHub integration, add this repository (suspect commits, `Fixes SHORT-ID` resolves issues).
+  4. An issue alert rule whose action creates a GitHub issue in this repo with the label `sentry` (check that your
+     Sentry plan has ticket actions in alert rules; otherwise create the issue from the Sentry issue page, or add the
+     label by hand).
+  5. Turn on server-side data scrubbing in the project.
+- [ ] Fire drill: plant a runtime error (behind a flag in stg first), deploy to `prd`, and follow it from Sentry →
+      issue → triage → `ai-fixable` → hotfix PR → merge → prd → Sentry resolved in the release.
 
 ### Phase 6: Observability and tuning · ongoing
 
@@ -811,7 +854,7 @@ sweep" of Sentry and opens or updates issues. Check that routines are available 
 
 ## 15. Next step
 
-Phases 0–4 are done and live (see Status at the top). Next:
+Phases 0–4 are done and live; Phase 5 is built and waits for the Sentry setup (see Status at the top). Next:
 
 1. **Watch Phase 3** for 2–4 weeks: the first medium PR (expect `risk:medium` and a failing `merge-gate` until approved),
    and the first Dependabot npm patch (expect `risk:low` and an auto-merge).
@@ -819,4 +862,4 @@ Phases 0–4 are done and live (see Status at the top). Next:
    fail with "the PR has the needs-human label".
 3. Follow-ups in issues #11 and #15.
 4. **Phase 4** is live. Still to see: an auto-merged PR that changes the site, deployed by the hourly schedule.
-5. **Phase 5:** production bug pipeline (Sentry, triage, bugfix agent).
+5. **Phase 5:** set up Sentry (the checklist in §12, Phase 5), then the fire drill.

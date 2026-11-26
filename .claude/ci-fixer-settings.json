@@ -8,6 +8,7 @@
       "Read(//proc/**)",
       "Edit(./.github/**)",
       "Edit(./.claude/**)",
+      "Edit(./.mcp.json)",
       "Edit(./.husky/**)",
       "Edit(./CLAUDE.md)",
       "Edit(./REVIEW.md)",

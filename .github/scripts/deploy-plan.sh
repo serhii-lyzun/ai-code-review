@@ -33,7 +33,7 @@ git cat-file -e "$live^{commit}" 2> /dev/null ||
   decide true "the last dev deploy, ${live:0:7}, isn't in this clone's history"
 
 relevant=$(git diff --name-only "$live" "$sha" | grep -vE \
-  '(\.md$|^src/.*\.test\.tsx?$|^\.claude/|^policy/|^scripts/)' || true)
+  '(\.md$|^src/.*\.test\.tsx?$|^\.claude/|^\.mcp\.json$|^policy/|^scripts/)' || true)
 [ -n "$relevant" ] ||
   decide false "only docs, tests or config changed since ${live:0:7}"
 decide true "$(grep -c . <<< "$relevant") site file(s) changed since ${live:0:7}"

@@ -28,6 +28,10 @@ on:
         description: deploy or rollback
         type: string
         default: deploy
+    secrets:
+      SENTRY_AUTH_TOKEN:
+        description: Sentry org auth token, to record the deploy (optional)
+        required: false
 
 permissions: {}
 
@@ -72,6 +76,16 @@ jobs:
           URL: ${{ steps.publish.outputs.url }}
           FLAGS: ${{ steps.publish.outputs.flags }}
         run: .github/scripts/smoke-test.sh "$URL" "$SHA" "$FLAGS"
+
+      # Advisory: the script only warns, so Sentry can't fail a deploy.
+      - name: Record the deploy in Sentry
+        if: vars.SENTRY_DSN != ''
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          SENTRY_ORG: ${{ vars.SENTRY_ORG }}
+          SENTRY_URL: ${{ vars.SENTRY_URL }}
+          URL: ${{ steps.publish.outputs.url }}
+        run: .github/scripts/sentry-deploy.sh "$ENVIRONMENT" "$SHA" "$URL"
 
       - name: Job summary
         if: always()
