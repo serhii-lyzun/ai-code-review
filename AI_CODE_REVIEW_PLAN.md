@@ -16,8 +16,8 @@
 | Labels    | Opt-in triggers: `ai-review` (CI review), `ai-fix` (one fix round), `security-review` (security pass); `@claude` mentions for interactive help. Everything also requires `AI_AGENTS_ENABLED=true` (currently on).                                                                                                                                                                                                                                   |
 | Benchmark | Local reviewer agent: **5/5** planted bugs caught, **0** false positives on the clean control PR. The one CI run (#7, XSS) matched the local result exactly. The planted-bug versions are tagged `benchmark/v1/<name>`; the answer key is kept outside the repo.                                                                                                                                                                                    |
 | Phase 3   | **Live** (#20, 2026-11-24): risk tiers (`policy/risk.json`, `scripts/risk-tier.mjs`) and `merge-gate`. `merge-gate` is a required check and owns the approval rule (low: none; medium/high: a collaborator's approval). Auto-merge is on for `risk:low` (`AUTO_MERGE_ENABLED=true`). Checked on a high PR (#20) and a low one (#21, merged without `--admin`). Not yet seen: a medium PR, and a Dependabot PR with auto-merge on.                   |
-| Phase 4   | **Built, not yet live**: `deploy.yml` builds `main` once and promotes it dev → stg → prd on GitHub Pages (folders on `gh-pages`), with smoke tests, a release summary before the prd approval, `rollback.yml` and runtime feature flags. Live once the environments and Pages are set up and the first deploy has run.                                                                                                                              |
-| Next      | Set up the environments and Pages, run the first deploy and a rollback drill (§12, Phase 4). Keep watching Phase 3. See §15.                                                                                                                                                                                                                                                                                                                        |
+| Phase 4   | **Live** (#25, #26, 2026-11-25): `deploy.yml` builds `main` once and promotes it dev → stg → prd on GitHub Pages (folders on `gh-pages`), with HTTP smoke tests, a release summary before the prd approval, `rollback.yml` and runtime feature flags. Drilled: two full promotions, a prd rollback and roll-forward, and a flags-only redeploy in stg.                                                                                              |
+| Next      | Watch Phases 3 and 4: an auto-merged PR that changes the site should be deployed by the hourly schedule. Then Phase 5. See §15.                                                                                                                                                                                                                                                                                                                     |
 
 ---
 
@@ -747,10 +747,18 @@ sweep" of Sentry and opens or updates issues. Check that routines are available 
       `claude-code-action` rejects `push` events ("Unsupported event type: push"), so the step runs the pinned Claude
       Code CLI directly; and the CLI rejects a `--json-schema` that declares `"$schema": ".../draft/2020-12/schema"`.
       `continue-on-error` showed the failed step as passed, so a missing AI summary is now noted in the run summary.
-- [ ] Set up: create the `gh-pages` branch, turn on Pages (branch `gh-pages`, `/`), create `dev`, `stg`, `prd` with
-      deployment branch `main` (prd: required reviewer, prevent self-review off, see §4.2), and set `FEATURE_FLAGS={}`.
-- [ ] First deploy end to end, including the prd approval, then a rollback drill (`target=previous`, then `current`), and
-      flip `releaseBanner` in stg.
+- [x] Set up (2026-11-25): `gh-pages` branch (GitHub turned Pages on by itself when it appeared: branch `gh-pages`, `/`,
+      HTTPS), environments `dev`, `stg`, `prd` with deployment branch `main` only (prd: the maintainer as required
+      reviewer, prevent self-review off, see §4.2), `FEATURE_FLAGS={}` in each.
+- [x] First deploy end to end (#25, run 45627050593): dev and stg passed, prd waited for approval and passed. The AI
+      summary was missing (see the gotchas above) and was fixed in #26, whose run (45628761800) had it.
+- [x] Rollback drill (2026-11-25): `target=previous` took prd from `a1e909c` back to `510c81c` (approval, smoke test,
+      `report` passed, `gh-pages` recorded `rollback(prd): 510c81c… (from a1e909c…)`), then `target=a1e909c` rolled it
+      forward. Note: a roll-forward through `rollback.yml` also marks the release it leaves as rolled back from, so prd
+      then has no `previous` target until the next normal deploy. The schedule didn't undo either step (the plan says
+      "already deployed to dev").
+- [x] Flags drill: stg `FEATURE_FLAGS={"releaseBanner":true}`, then `rollback.yml -f environment=stg -f target=current`.
+      The smoke test waited for the new `flags.json`; dev and prd kept `{}`. Turn it off the same way.
 - [ ] To check: an auto-merged PR that changes the site gets deployed by the next scheduled run.
 - [ ] Later: a browser e2e test (Playwright) against stg before the prd approval.
 
@@ -803,11 +811,12 @@ sweep" of Sentry and opens or updates issues. Check that routines are available 
 
 ## 15. Next step
 
-Phases 0–3 are done and live (see Status at the top). Next:
+Phases 0–4 are done and live (see Status at the top). Next:
 
 1. **Watch Phase 3** for 2–4 weeks: the first medium PR (expect `risk:medium` and a failing `merge-gate` until approved),
    and the first Dependabot npm patch (expect `risk:low` and an auto-merge).
 2. **Verify the `needs-human` re-run** (#24) the next time a fix round hits the limit: `merge-gate` should re-run and
    fail with "the PR has the needs-human label".
 3. Follow-ups in issues #11 and #15.
-4. **Phase 4:** set up the environments and Pages, then the first deploy and a rollback drill (§12).
+4. **Phase 4** is live. Still to see: an auto-merged PR that changes the site, deployed by the hourly schedule.
+5. **Phase 5:** production bug pipeline (Sentry, triage, bugfix agent).
