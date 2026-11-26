@@ -171,6 +171,47 @@ jobs:
             --strict-mcp-config
             --json-schema '${{ steps.schema.outputs.json }}'
 
+      # Without a structured result the next step only says "no structured
+      # result". Say why, from the action's execution file: max turns, an API
+      # or auth error, or a run that never reached the model (num_turns 1,
+      # cost 0). Inline, not a repo script, so no PR code runs in this job.
+      # The raw text is printed with workflow commands stopped, because it can
+      # quote untrusted input.
+      - name: Explain a missing result
+        if: always() && steps.claude.outcome != 'skipped' && steps.claude.outputs.structured_output == ''
+        env:
+          EXEC_FILE: ${{ steps.claude.outputs.execution_file }}
+        run: |
+          set -uo pipefail
+          if [ -z "$EXEC_FILE" ] || [ ! -f "$EXEC_FILE" ]; then
+            reason="no execution file: the action failed before Claude ran (see the Claude step's log)"
+          else
+            reason=$(jq -r '
+              ([.[] | select(.type == "result")] | last) as $r
+              | if $r == null then
+                  "Claude never finished (no result message). Last text: "
+                    + ([.[] | select(.type == "assistant") | .message.content[]? | select(.type == "text") | .text] | last // "none")
+                else
+                  "\($r.subtype // "unknown"), is_error \($r.is_error | tostring), \($r.num_turns // "n/a") turns, $\($r.total_cost_usd // 0)"
+                    + (if (($r.errors // []) | length) > 0 then ". Errors: " + ($r.errors | map(tostring) | join("; ")) else "" end)
+                    + (if ($r.result // "") != "" then ". Result: " + ($r.result | tostring) else "" end)
+                end' "$EXEC_FILE" 2>&1)
+          fi
+          token="stop-$(openssl rand -hex 16)"
+          echo "::stop-commands::$token"
+          printf '%s\n' "$reason"
+          echo "::$token::"
+          one_line=$(printf '%s' "$reason" | tr '\r\n' '  ' | head -c 900)
+          echo "::error::Claude returned no structured result: $one_line"
+          {
+            echo "### No structured result from Claude"
+            echo
+            echo '```text'
+            printf '%s\n' "$reason" | head -c 3000 | sed 's/```/` ` `/g'
+            echo
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
       # status: fixed | not_reproducible | not_fixable | rejected
       - name: Verify the reproduction and the fix
         id: verify
