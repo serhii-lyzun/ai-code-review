@@ -4,12 +4,15 @@ import reactLogo from './assets/react.svg'
 import viteLogo from './assets/vite.svg'
 import './App.css'
 import type { Flags } from './flags/flags.ts'
+import SentryTestError from './components/SentryTestError.tsx'
 
 type AppProps = {
   flags?: Flags
+  /** dev, stg, prd or local (see environmentFromPath). */
+  environment?: string
 }
 
-function App({ flags = {} }: AppProps) {
+function App({ flags = {}, environment = 'local' }: AppProps) {
   const [count, setCount] = useState(0)
 
   return (
@@ -38,6 +41,8 @@ function App({ flags = {} }: AppProps) {
         >
           Count is {count}
         </button>
+        {/* Never in prd, even if the flag is copied there by mistake. */}
+        {flags.sentryTestError && environment !== 'prd' && <SentryTestError />}
       </section>
 
       <div className="ticks"></div>

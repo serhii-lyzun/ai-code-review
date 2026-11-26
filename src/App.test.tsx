@@ -32,4 +32,25 @@ describe('App', () => {
     render(<App flags={{ releaseBanner: false }} />)
     expect(screen.queryByRole('status')).not.toBeInTheDocument()
   })
+
+  it('hides the Sentry test error button by default', () => {
+    render(<App />)
+    expect(
+      screen.queryByRole('button', { name: 'Throw a Sentry test error' }),
+    ).not.toBeInTheDocument()
+  })
+
+  it('never shows the Sentry test error button in prd', () => {
+    render(<App flags={{ sentryTestError: true }} environment="prd" />)
+    expect(
+      screen.queryByRole('button', { name: 'Throw a Sentry test error' }),
+    ).not.toBeInTheDocument()
+  })
+
+  it('shows the Sentry test error button when its flag is on', () => {
+    render(<App flags={{ sentryTestError: true }} environment="stg" />)
+    expect(
+      screen.getByRole('button', { name: 'Throw a Sentry test error' }),
+    ).toBeInTheDocument()
+  })
 })
